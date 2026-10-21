@@ -1,0 +1,23 @@
+# MCP protocol files (runtime artifacts)
+req.json
+res.json
+res.json.tmp
+busy.json
+progress.json
+worker.pid
+worker_boot.log
+shutdown.req
+
+# test artifacts
+v3_log.md
+v3_test_file.m
+*.png
+!docs/*.png
+
+# Node
+node_modules/
+package-lock.json
+
+# OS
+Thumbs.db
+.DS_Store
