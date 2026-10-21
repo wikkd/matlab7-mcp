@@ -13,6 +13,7 @@ v3_log.md
 v3_test_file.m
 *.png
 !docs/*.png
+!test-materials/**/*.png
 
 # Node
 node_modules/
