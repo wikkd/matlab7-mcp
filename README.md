@@ -116,6 +116,45 @@ default 200 000), `MCP_BOOT_WAIT` (worker boot timeout seconds, default 120).
 > The `.m` files shipped in this repo run fine on R14 as-is (the few non-ASCII
 > characters are em-dashes in comments, verified harmless).
 
+## Let the agent install it itself (copy-paste prompt)
+
+You don't have to do any of the above by hand. Paste the prompt below into
+your MCP-capable AI assistant (ZCode, Claude Code, Cursor agent, ...) and it
+will clone the repo, find MATLAB, write the client config, and verify the
+bridge end-to-end on its own:
+
+```text
+Install the matlab7-mcp bridge for me, following the README at
+https://github.com/wikkd/matlab7-mcp. Do all of this yourself:
+
+1. Clone https://github.com/wikkd/matlab7-mcp to a directory of your choice
+   (record the absolute path).
+2. Locate my MATLAB 7.0 (R14) installation — the folder containing
+   bin\win32\MATLAB.exe. Check D:\MATLAB7, C:\MATLAB7, C:\MATLAB_R14 first,
+   then search the disk if none exist. If R14 is not installed at all, stop
+   and tell me where to get it installed before continuing.
+3. Register the server "matlab7" in my MCP client config: command "node",
+   args pointing at <repo>\mcp-server.js, env MATLAB7_DIR set to the MATLAB
+   root found in step 2. Use double backslashes in JSON paths. Find the
+   correct config file for my client yourself (Claude Desktop:
+   claude_desktop_config.json; Cursor: mcp.json; ZCode: config.json
+   mcp.servers). If two MCP clients share this repo folder, give each its
+   own clone — the file protocol is a single channel.
+4. Verify the bridge: run the repo's regression suite with Node
+   (node v3_regress.js <repo folder>) — expect 34/34 assertions passing.
+   If a capture-related assertion fails, note that window capture needs an
+   interactive desktop session and report which assertions still pass.
+5. Report back: repo path, MATLAB root, config file edited, regression
+   result, and anything I must do manually (restart the client).
+
+Constraints: do not modify any file inside the repo — config edits happen
+in the client's own config file only. If MATLAB7_DIR cannot be determined,
+ask me instead of guessing.
+```
+
+After the agent finishes, restart your MCP client and try
+*"list my MATLAB workspace"* to confirm.
+
 ## Tools (22)
 
 **Execution & diagnostics**

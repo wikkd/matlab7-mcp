@@ -109,6 +109,38 @@ MCP客户端 ──MCP stdio──> mcp-server.js (Node, 零依赖)
 > 会自动转码。本仓库自带的 `.m` 在 R14 上可直接运行（仅注释里有少量 em-dash，
 > 已验证无害）。
 
+## 让 AI 自己部署（复制粘贴提示词）
+
+上面的步骤不用手动做。把下面这段提示词直接发给你手头的 MCP 客户端 AI
+（ZCode、Claude Code、Cursor agent 等），它会自己完成克隆仓库、找 MATLAB、
+写客户端配置、跑回归验证的全流程：
+
+```text
+帮我部署 matlab7-mcp 桥接器，参照 https://github.com/wikkd/matlab7-mcp 的
+README，全部由你自己完成：
+
+1. 克隆 https://github.com/wikkd/matlab7-mcp 到你选择的目录（记下绝对路径）。
+2. 找到我的 MATLAB 7.0 (R14) 安装目录——即包含 bin\win32\MATLAB.exe 的文件夹。
+   先检查 D:\MATLAB7、C:\MATLAB7、C:\MATLAB_R14，都不在就搜索磁盘。如果 R14
+   根本没装，停下来告诉我先装好，不要继续。
+3. 在我的 MCP 客户端配置里注册名为 "matlab7" 的 server：command 为 "node"，
+   args 指向 <仓库目录>\mcp-server.js，env 里 MATLAB7_DIR 设为第 2 步找到的
+   MATLAB 根目录。JSON 路径用双反斜杠。自己判断我这台机器上正确的配置文件
+   位置（Claude Desktop：claude_desktop_config.json；Cursor：mcp.json；
+   ZCode：config.json 的 mcp.servers）。如果多个 MCP 客户端共用这个仓库
+   目录，给每个客户端单独克隆一份——文件协议是单通道。
+4. 验证桥接：用 Node 运行仓库自带的回归测试（node v3_regress.js <仓库目录>），
+   预期 34/34 断言通过。如果截图相关断言失败，说明窗口抓取需要交互式桌面
+   会话，报告其余哪些断言通过即可。
+5. 汇报：仓库路径、MATLAB 根目录、改了哪个配置文件、回归结果，以及还需要
+   我手动做什么（重启客户端）。
+
+约束：不要改动仓库里的任何文件——配置修改只发生在客户端自己的配置文件里。
+如果 MATLAB7_DIR 无法确定，直接问我，不要猜。
+```
+
+AI 部署完成后，重启 MCP 客户端，说一句"列出我的 MATLAB workspace"即可确认。
+
 ## 工具清单（22 个）
 
 **执行与诊断**
