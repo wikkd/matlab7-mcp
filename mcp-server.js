@@ -122,7 +122,7 @@ function handleMcpLine(line) {
     rpcResult(msg.id, {
       protocolVersion: msg.params?.protocolVersion || '2024-11-05',
       capabilities: { tools: {} },
-      serverInfo: { name: 'matlab7-mcp-server', version: '2.0.0' },
+      serverInfo: { name: 'matlab7-mcp-server', version: '3.0.0' },
     });
     return;
   }
@@ -200,6 +200,14 @@ function killStaleWorker() {
 function startWorker() {
   if (!MATLAB_EXE) throw new Error('MATLAB 7.0 not found. Set MATLAB7_DIR env var.');
   killStaleWorker();
+  // Rotate the boot log so it cannot grow without bound (R14 appends forever).
+  try {
+    const log = path.join(WORK_DIR, 'worker_boot.log');
+    if (fs.existsSync(log)) fs.renameSync(log, log.replace(/\.log$/, '.log.1'));
+  } catch {}
+  // progress.json from a previous session would make matlab_progress report
+  // stale numbers before the first eval of this session has run.
+  try { if (fs.existsSync(PROGRESS_FILE)) fs.unlinkSync(PROGRESS_FILE); } catch {}
   const code = `cd('${WORK_DIR.replace(/\\/g, '/')}'), addpath(pwd), mcp_worker('req.json','res.json','worker.pid','busy.json'), exit`;
   workerProc = spawn(MATLAB_EXE, ['-nosplash', '-nodesktop', '-logfile', path.join(WORK_DIR, 'worker_boot.log'), '-r', code], {
     cwd: WORK_DIR,
@@ -293,7 +301,8 @@ function waitForResponse(id, timeoutMs) {
   const busy = readBusy();
   let hint = `MATLAB worker timeout after ${Math.round(timeoutMs / 1000)}s (req id=${id}).`;
   if (busy) {
-    hint += ` Worker still busy with cmd="${busy.cmd}" since ${busy.since} — increase timeout_sec or use matlab_restart to abort.`;
+    hint += ` Worker still busy with cmd="${busy.cmd}" since ${busy.since} — increase timeout_sec or use matlab_restart to abort. ` +
+    'After the run finishes (or via matlab_restart), matlab_progress shows how far it got if the code called mcp_progress.';
   } else {
     hint += ' Worker idle — the request may have been lost; retry or matlab_restart.';
   }
@@ -560,9 +569,11 @@ const TOOLS = [
   },
   {
     name: 'matlab_progress',
-    description: 'Read progress of a long-running matlab_eval: user code reports via '
-      + 'mcp_progress(frac, msg) inside loops; this returns {pct, msg} or idle. '
-      + 'Non-blocking: the eval keeps running; poll from another tool call.',
+    description: 'Read progress of the LAST eval that called mcp_progress(frac, msg): '
+      + 'returns {pct, msg} or "(no progress reported)". '
+      + 'NOTE: the server blocks while an eval is running, so you cannot poll '
+      + 'mid-eval — use this after a timeout to see how far the run got '
+      + '(the worker keeps running after a tool timeout).',
     inputSchema: { type: 'object', properties: {} },
   },
   {
@@ -796,7 +807,7 @@ async function callTool(name, args) {
         const j = JSON.parse(fs.readFileSync(PROGRESS_FILE, 'utf8'));
         pct = j.pct; msg = j.msg || '';
       } catch {
-        return textOut('(no progress reported — either idle or the eval does not call mcp_progress)');
+        return textOut('(no progress reported — either the last eval never called mcp_progress, or progress.json was cleaned)');
       }
       return textOut(`progress: ${pct}% ${msg}`.trimEnd());
     }
@@ -834,6 +845,6 @@ function shutdown() {
 
 // -------------------------------------------------------------------- main
 try { fs.mkdirSync(WORK_DIR, { recursive: true }); } catch {}
-send({ jsonrpc: '2.0', method: 'notifications/log', params: { level: 'info', data: 'matlab7-mcp-server v3 ready (19 tools)' } });
+send({ jsonrpc: '2.0', method: 'notifications/log', params: { level: 'info', data: `matlab7-mcp-server v3 ready (${TOOLS.length} tools)` } });
 // Keep the process alive; worker starts lazily on first tool call.
 setInterval(() => {}, 1 << 30);

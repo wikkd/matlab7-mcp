@@ -62,7 +62,7 @@ for k = 1:numel(lineHandles)
             delete_line(h);
             report.removed{end+1} = num2str(h); %#ok<AGROW>
         catch
-            % handle already gone — still counts as removed
+            % handle already gone - still counts as removed
             report.removed{end+1} = [num2str(h), ' (gone)']; %#ok<AGROW>
         end
     end

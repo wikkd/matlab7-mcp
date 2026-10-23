@@ -11,7 +11,7 @@
 ![Node](https://img.shields.io/badge/node-%E2%89%A516-green)
 ![MATLAB](https://img.shields.io/badge/MATLAB-7.0%20(R14)%20%7C%202004-lightgrey)
 ![License](https://img.shields.io/badge/license-MIT-yellow)
-![Tests](https://img.shields.io/badge/regression-34%2F34%20pass-brightgreen)
+![Tests](https://img.shields.io/badge/regression-47%2F47%20pass-brightgreen)
 
 </div>
 
@@ -113,8 +113,9 @@ default 200 000), `MCP_BOOT_WAIT` (worker boot timeout seconds, default 120).
 > **Encoding note**: R14 never reads `.m` files as UTF-8. Hand-written `.m`
 > files with non-ASCII comments must be saved as **GBK** — or better, let the
 > agent write them through `matlab_write_file`, which converts automatically.
-> The `.m` files shipped in this repo run fine on R14 as-is (the few non-ASCII
-> characters are em-dashes in comments, verified harmless).
+> Every `.m` file shipped in this repo is verified pure ASCII (enforced by
+> `node check_static.js`), so it runs on R14 as-is — a UTF-8 em-dash in a
+> worker string once mojibake'd a runtime warning before this check existed.
 
 ## Let the agent install it itself (copy-paste prompt)
 
@@ -141,7 +142,7 @@ https://github.com/wikkd/matlab7-mcp. Do all of this yourself:
    mcp.servers). If two MCP clients share this repo folder, give each its
    own clone — the file protocol is a single channel.
 4. Verify the bridge: run the repo's regression suite with Node
-   (node v3_regress.js <repo folder>) — expect 34/34 assertions passing.
+   (node v3_regress.js <repo folder>) — expect 47/47 assertions passing.
    If a capture-related assertion fails, note that window capture needs an
    interactive desktop session and report which assertions still pass.
 5. Report back: repo path, MATLAB root, config file edited, regression
@@ -165,7 +166,7 @@ After the agent finishes, restart your MCP client and try
 | `matlab_check` | Syntax-check without running: block-keyword balance + full pcode parse |
 | `matlab_run_file` | Run a `.m` file (auto-clears its function cache, restores cwd) |
 | `matlab_status` / `matlab_restart` | Worker status (incl. current busy command) / restart |
-| `matlab_progress` | Poll `mcp_progress(frac, msg)` markers from a long-running eval |
+| `matlab_progress` | Read `mcp_progress(frac, msg)` markers from the last eval (server blocks mid-eval, so this is for post-timeout inspection) |
 
 **Data & files**
 
@@ -285,9 +286,10 @@ Real course models, sim outputs compared before/after:
 7. **Long tasks need a progress channel** — and beware user code that calls a
    bare `clear`, which wipes both the progress marker and your loop variables,
    disguising failures as successes (the eval tool now warns about it).
-8. **Regression tests are the safety net for every refactor.** 34 assertions
+8. **Regression tests are the safety net for every refactor.** 47 assertions
    over a real stdio server + real MATLAB (GBK round-trips, NaN serialization,
-   ghost audits) made the v3 overhaul of 22 tools land without casualties.
+   ghost audits, clear-warning and progress lifecycle) made the v3 overhaul of
+   22 tools land without casualties.
 
 ## Changelog
 
@@ -300,7 +302,7 @@ Real course models, sim outputs compared before/after:
 | Long `.m` files keep getting mangled by fprintf `%%` escaping | `matlab_check` (syntax pre-flight) + `matlab_append_file` (log building without escaping) |
 | A bare `clear` in user code wipes the eval marker → errors silently swallowed as success | eval detects bare `clear`/`clear all` and appends a NOTE warning |
 | A 50 000-point sim array dumped as multi-MB JSON | `matlab_summary`: row budget + endpoint-preserving downsample + stats |
-| Long sims were a black box | `mcp_progress(frac,msg)` in user code + `matlab_progress` polling |
+| Long sims were a black box | `mcp_progress(frac,msg)` in user code + `matlab_progress` to inspect after a timeout |
 | End-of-session cleanup scripted by hand every time | `matlab_cleanup` |
 | Layout needed (details above) | `matlab_sim_route` + `matlab_sim_arrange` pipeline |
 
@@ -352,7 +354,7 @@ Real course models, sim outputs compared before/after:
 22. **Trimmed R14 has no checkcode/mlint** — syntax-check via pcode; but pcode tolerates a missing `end`, so run a textual block-keyword balance pre-pass first (mind parentheses: the `end` in `Points(end,:)` is not a block keyword).
 23. **`print('-sModelName')` always fails** ("Error using ==> graphics") — capture windows with `cap_window.ps1` instead.
 24. **Worker `.m` files must be ASCII/GBK**; UTF-8 Chinese comments become mojibake and can corrupt string contents.
-25. **Report progress on long tasks**: call `mcp_progress(k/n,'msg')` inside eval code; poll with `matlab_progress`.
+25. **Report progress on long tasks**: call `mcp_progress(k/n,'msg')` inside eval code; `matlab_progress` reads it back (post-hoc: the server blocks while the eval runs).
 26. **`[~,x] = sort(…)` unsupported** (tilde output-ignoring is R2009b+) — hand-rolled sort + find loops.
 27. **Struct field names can't contain dots** — beware dynamic field names built from handle strings.
 28. **Full-path `load_system` fails** ("There is no system named 'C:/…'") — `cd` into the model folder and use the bare name; subsystem root names follow the swap.
@@ -386,8 +388,9 @@ artifacts, gitignored, and safe to delete while the worker is idle.
 
 **A tool call timed out — is it dead?**
 Check `matlab_status` first: if the worker is `busy`, it's still running —
-raise the timeout or poll `matlab_progress`. Only if it's idle and the request
-was lost should you retry or `matlab_restart`.
+raise the timeout and wait, or `matlab_restart` to abort. After the run
+finishes (or you restart), `matlab_progress` shows how far a `mcp_progress`-
+instrumented eval got. Retry only if the worker is idle and the request was lost.
 
 **Can two MCP clients share one server folder?**
 No — the file protocol (req.json/res.json) is a single channel. Give each
@@ -412,15 +415,19 @@ client at it. Packaging PRs are welcome.
 
 ## Testing
 
+Two layers, both runnable from a fresh clone:
+
 ```
-node v3_regress.js <repo folder>
+node check_static.js          # no MATLAB needed: ASCII/tool-count/README/privacy consistency
+node v3_regress.js <repo>     # full regression: real server + real R14 worker, 47 assertions
 ```
 
-Boots a real stdio server + real MATLAB worker and runs 34 assertions across
-all 22 tools (currently all passing). Requires an interactive desktop session
-(window capture). `v3_smoke_window.js` tests the capture chain;
-`v3_smoke_arrange.js <model path>` tests the arrange+route pipeline on any
-Simulink model.
+The regression boots a real stdio server + real MATLAB worker and runs 46
+assertions across all 22 tools (currently all passing). Requires an
+interactive desktop session (window capture). `v3_smoke_window.js` tests the
+capture chain; `v3_smoke_arrange.js <model path>` tests the arrange+route
+pipeline on any Simulink model. CI (GitHub Actions) runs the static layer on
+every push; the MATLAB layer stays local because it needs a real R14 install.
 
 ## Lifecycle
 

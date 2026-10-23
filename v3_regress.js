@@ -88,6 +88,21 @@ async function main() {
   await T('eval-error', false, () => tool('matlab_eval', { code: "error('boom')" }));
   await T('eval-syntax', false, () => tool('matlab_eval', { code: 'for k=1:10 disp(k)' }));
 
+  // bare clear: R14 does NOT error on a bare clear itself, so the eval
+  // succeeds - but it must carry the clear-warning (probe-verified).
+  const rclr = await T('eval-bare-clear-warns', true, () => tool('matlab_eval', { code: 'v3keep = 1; clear' }));
+  if (rclr && !/bare "clear"/i.test(rclr.text)) { console.log('FAIL  bare-clear-warning-missing', rclr.text.slice(0, 120)); results.fail++; }
+  else console.log('PASS  bare-clear-warning-present');
+  // and the bare clear really did wipe the workspace variable
+  const rcl2 = await T('eval-bare-clear-wiped', false, () => tool('matlab_get_var', { name: 'v3keep' }));
+  if (rcl2 && !/Undefined/.test(rcl2.text)) { console.log('FAIL  bare-clear-not-wiped', rcl2.text.slice(0, 120)); results.fail++; }
+  // a failed eval WITHOUT bare clear must NOT carry the warning
+  const rnoc = await T('eval-error-plain', false, () => tool('matlab_eval', { code: "error('plain boom')" }));
+  if (rnoc && /bare "clear"/i.test(rnoc.text)) { console.log('FAIL  clear-warning-false-positive', rnoc.text.slice(0, 160)); results.fail++; }
+  // selective clear must pass clean with no warning
+  const rsel = await T('eval-selective-clear-ok', true, () => tool('matlab_eval', { code: 'v3keep = 1; clear v3keep; disp(42)' }));
+  if (rsel && /bare "clear"/i.test(rsel.text)) { console.log('FAIL  clear-warning-on-selective', rsel.text.slice(0, 160)); results.fail++; }
+
   // check tool
   const rc = await T('check-clean', true, () => tool('matlab_check', { code: 'x = 1; y = x + 1; disp(y)' }));
   if (rc && !rc.text.includes('OK')) { console.log('FAIL  check-clean-message', rc.text); results.fail++; }
@@ -162,6 +177,29 @@ async function main() {
     else console.log(`PASS  sim_info-nlines (${j.nlines})`);
   }
   await T('sim_clean', true, () => tool('matlab_sim_clean', { model: 'v3tst' }));
+  // arrange + route on the tiny model: both must run and keep the line connected
+  await T('sim_arrange', true, () => tool('matlab_sim_arrange', { model: 'v3tst' }));
+  const rr2 = await T('sim_route', true, () => tool('matlab_sim_route', { model: 'v3tst' }));
+  if (rr2) {
+    const mj = rr2.text.match(/Routed (\d+) line\(s\), kept (\d+) as-is, failed (\d+)/);
+    if (!mj) { console.log('FAIL  sim_route-json', rr2.text); results.fail++; }
+    else {
+      const routed = parseInt(mj[1], 10), failed = parseInt(mj[3], 10);
+      if (routed < 1) { console.log('FAIL  sim_route-count', rr2.text); results.fail++; }
+      else if (failed > 0) { console.log('FAIL  sim_route-failures', rr2.text); results.fail++; }
+      else console.log(`PASS  sim_route-count (${routed} routed, ${failed} failed)`);
+    }
+  }
+  const rck = await T('sim_route-connectivity', true, () => tool('matlab_eval', { code: [
+    "% line hangs on the DESTINATION block's Inports (R14 pitfall #20)",
+    "lh = get_param('v3tst/Out1','LineHandles');",
+    "if isempty(lh.Inport) || lh.Inport(1) <= 0, error('line lost'); end",
+    "src = get_param(lh.Inport(1),'SrcPortHandle');",
+    "phs = get_param('v3tst/Int1','PortHandles');",
+    "if src ~= phs.Outport(1), error('wrong src'); end",
+    "disp('wire ok');",
+  ].join('\n') }));
+  if (rck && !rck.text.includes('wire ok')) { console.log('FAIL  sim_route-wire-lost', rck.text); results.fail++; }
   await T('sim-teardown', true, () => tool('matlab_eval', { code: "close_system('v3tst',0); delete('v3tst.mdl'); disp('cleaned');" }));
 
   // cleanup tool
@@ -182,6 +220,13 @@ async function main() {
     "disp('prog done');",
   ].join('\n'), timeout_sec: 60 }));
   if (rp && !rp.text.includes('prog done')) { console.log('FAIL  eval-with-progress-output', rp.text); results.fail++; }
+  // after that eval, matlab_progress must show its last written value
+  const rpw = await T('progress-after-eval', true, () => tool('matlab_progress', {}));
+  if (rpw && !rpw.text.includes('100')) { console.log('FAIL  progress-after-eval-value', rpw.text); results.fail++; }
+  // a NEW eval without mcp_progress must reset the progress file
+  await T('eval-no-progress', true, () => tool('matlab_eval', { code: 'disp(1+1)' }));
+  const rpn = await T('progress-reset-by-new-eval', true, () => tool('matlab_progress', {}));
+  if (rpn && !rpn.text.includes('no progress reported')) { console.log('FAIL  progress-not-reset', rpn.text); results.fail++; }
 
   await T('status', true, () => tool('matlab_status', {}));
 

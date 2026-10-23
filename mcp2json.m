@@ -265,7 +265,7 @@ end
 
     function u8 = unicode2utf8(str)
         % Convert char (GBK-decoded by MATLAB) to UTF-8 bytes, returned as char.
-        % unicode2native('') throws in R14 — guard empty first.
+        % unicode2native('') throws in R14 - guard empty first.
         if isempty(str)
             u8 = '';
             return;

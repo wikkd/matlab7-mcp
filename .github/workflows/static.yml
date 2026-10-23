@@ -1,0 +1,26 @@
+# Static checks only — the full regression needs a real MATLAB 7.0 (R14)
+# install on Windows, which GitHub runners cannot provide. Everything that
+# CAN be checked without MATLAB is checked here on every push and PR.
+name: static-checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  static:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Syntax-check all JS files
+        run: |
+          for f in *.js; do node --check "$f"; done
+
+      - name: Static consistency (ASCII .m / tool counts / README counts / privacy)
+        run: node check_static.js

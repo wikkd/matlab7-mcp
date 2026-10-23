@@ -50,10 +50,14 @@ if exist(fullfile(pwd, 'worker_init.m'), 'file')
 end
 
 % v3: publish progress.json path as a global so mcp_progress() calls inside
-% user eval code land in the worker's work dir regardless of cwd.
+% user eval code land in the worker's work dir regardless of cwd. The file
+% is cleared BEFORE each request and after a stop, so matlab_progress only
+% ever reports the last eval that actually wrote progress.
 try
     evalin('base', ['global MCP_PROGRESS_FILE; MCP_PROGRESS_FILE = ''' ...
         strrep(fullfile(pwd, 'progress.json'), '''', '''''') ''';']);
+    pf = fullfile(pwd, 'progress.json');
+    if exist(pf, 'file'), delete(pf); end
 catch
 end
 
@@ -90,6 +94,13 @@ while true
     % response can still be matched by the server.
     rid = extract_id(raw);
 
+    % New request: drop the previous eval's progress so matlab_progress never
+    % reports stale numbers for this run (mcp_progress re-creates the file).
+    try
+        pf = fullfile(pwd, 'progress.json');
+        if exist(pf, 'file'), delete(pf); end
+    end
+
     write_busy(busyfile, rid, raw);
     stopReq = false;
     resp = '';
@@ -108,6 +119,12 @@ while true
         if exist(busyfile, 'file'), delete(busyfile); end
     end
     if stopReq
+        % Leaving? Also drop the progress file so a later worker does not
+        % inherit this session's last progress numbers.
+        try
+            pf = fullfile(pwd, 'progress.json');
+            if exist(pf, 'file'), delete(pf); end
+        end
         return;
     end
 end
@@ -170,7 +187,7 @@ end
 
 % ------------------------------------------------------------------
 function [stopReq, resp] = handle_req(req, resfile)
-% NOTE: never build strings containing user text via sprintf("%s") — R14's
+% NOTE: never build strings containing user text via sprintf("%s") - R14's
 % sprintf mangles multi-byte chars to SUB (0x1A). Use [] concatenation with
 % num2str for numbers and jstr() for text.
 stopReq = false;
@@ -188,13 +205,16 @@ switch cmd
     case 'eval'
         dtxt = [tempname, '.diary'];
         [good, txt] = eval_capture(req.code, dtxt, '');
-        % v3: warn when user code contains a bare clear/clear all — it wipes
+        % v3: warn when user code contains a bare clear/clear all - it wipes
         % the caller's loop variables too (classic "Reference to a cleared
         % variable" failure seen with eval'd scripts in for-loops).
-        if good && ~isempty(strfind(req.code, 'clear all')) || ...
-                ~isempty(regexpi(req.code, '(^|[\n;,])\s*clear\s*;'))
+        % NOTE: bare clear/clear all always makes the eval FAIL (good=false),
+        % so the warning is attached when the code matches, regardless of ok.
+        hasClearWarn = ~isempty(strfind(req.code, 'clear all')) || ...
+            ~isempty(regexpi(req.code, '(^|[\n;,])\s*clear\s*([;,\n]|$)'));
+        if hasClearWarn
             txt = [txt, char(10), ...
-                'NOTE: code contains bare "clear"/"clear all" — it also wipes loop ', ...
+                'NOTE: code contains bare "clear"/"clear all" - it also wipes loop ', ...
                 'variables and workspace data. Use "clear <name>" or clear(''vars'') selectively.'];
         end
         resp = ['{"id":' num2str(req.id) ',"ok":' bool2str(good) ...
@@ -640,7 +660,7 @@ fid = fopen(fn, 'wb');
 if fid > 0
     % s already contains UTF-8 byte values as chars (jstr/mcp2json converted
     % text to UTF-8 bytes; native2unicode results were re-encoded there).
-    % Write bytes directly — a second unicode2native here would double-encode.
+    % Write bytes directly - a second unicode2native here would double-encode.
     fwrite(fid, uint8(s), 'uint8');
     fclose(fid);
 end
@@ -677,7 +697,7 @@ if isfield(p, 'ygap'),        req.ygap = p.ygap; end
 end
 
 function s = jstr(t)
-% NOTE: unicode2native('') throws "One dimension must be unary" in R14 —
+% NOTE: unicode2native('') throws "One dimension must be unary" in R14 -
 % guard the empty string first.
 if isempty(t)
     s = '""';

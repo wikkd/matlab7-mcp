@@ -10,7 +10,7 @@
 ![Node](https://img.shields.io/badge/node-%E2%89%A516-green)
 ![MATLAB](https://img.shields.io/badge/MATLAB-7.0%20(R14)%20%7C%202004-lightgrey)
 ![License](https://img.shields.io/badge/license-MIT-yellow)
-![Tests](https://img.shields.io/badge/regression-34%2F34%20pass-brightgreen)
+![Tests](https://img.shields.io/badge/regression-47%2F47%20pass-brightgreen)
 
 </div>
 
@@ -130,7 +130,7 @@ README，全部由你自己完成：
    ZCode：config.json 的 mcp.servers）。如果多个 MCP 客户端共用这个仓库
    目录，给每个客户端单独克隆一份——文件协议是单通道。
 4. 验证桥接：用 Node 运行仓库自带的回归测试（node v3_regress.js <仓库目录>），
-   预期 34/34 断言通过。如果截图相关断言失败，说明窗口抓取需要交互式桌面
+   预期 47/47 断言通过。如果截图相关断言失败，说明窗口抓取需要交互式桌面
    会话，报告其余哪些断言通过即可。
 5. 汇报：仓库路径、MATLAB 根目录、改了哪个配置文件、回归结果，以及还需要
    我手动做什么（重启客户端）。
@@ -151,7 +151,7 @@ AI 部署完成后，重启 MCP 客户端，说一句"列出我的 MATLAB worksp
 | `matlab_check` | 语法检查不运行：块关键字配平 + pcode 全量解析 |
 | `matlab_run_file` | 运行 `.m` 文件（自动 clear 该函数缓存、恢复工作目录） |
 | `matlab_status` / `matlab_restart` | worker 状态（含当前 busy 命令）/ 重启 |
-| `matlab_progress` | 轮询长任务里 `mcp_progress(frac, msg)` 的打点 |
+| `matlab_progress` | 读回最近一次 eval 里 `mcp_progress(frac, msg)` 的打点（server 在 eval 期间阻塞，适合超时后查看跑到哪了） |
 
 **数据与文件**
 
@@ -254,8 +254,9 @@ Sugiyama 式分层布局：① 从**目标侧**枚举边（分支边只有从 In
    数据；每次写后面跟一个读回断言。多个"改好了其实没改好"的 bug 都是这样抓出来的。
 7. **长任务要有进度通道**——并且当心用户代码里的裸 `clear`：它会同时清掉进度
    打点和循环变量，把失败伪装成成功（eval 工具现在会检测并警告）。
-8. **回归测试是每次重构的安全网。**34 组断言跑在真 stdio server + 真 MATLAB
-   上（GBK 往返、NaN 序列化、幽灵线审计），让 22 个工具的 v3 大修零伤亡落地。
+8. **回归测试是每次重构的安全网。**47 组断言跑在真 stdio server + 真 MATLAB
+   上（GBK 往返、NaN 序列化、幽灵线审计、clear 警告与 progress 生命周期），
+   让 22 个工具的 v3 大修零伤亡落地。
 
 ## 版本演进
 
@@ -268,7 +269,7 @@ Sugiyama 式分层布局：① 从**目标侧**枚举边（分支边只有从 In
 | 长 `.m` 文件总被 fprintf `%%` 转义写坏 | `matlab_check`（运行前语法预检）+ `matlab_append_file`（追加建日志，无需转义） |
 | 用户代码里的裸 `clear` 清掉 eval marker → 报错被吞成成功 | eval 检测裸 `clear`/`clear all` 并附加 NOTE 警告 |
 | 50 000 点仿真数组吐成几 MB JSON | `matlab_summary`：行预算 + 端点保留降采样 + 统计 |
-| 长仿真期间黑盒 | 用户代码内 `mcp_progress(frac,msg)` + `matlab_progress` 轮询 |
+| 长仿真期间黑盒 | 用户代码内 `mcp_progress(frac,msg)` + 超时后 `matlab_progress` 查看进度 |
 | 每次收尾都要手写清理脚本 | `matlab_cleanup` |
 | 需要自动布局（详见上文） | `matlab_sim_route` + `matlab_sim_arrange` 管线 |
 
@@ -333,8 +334,8 @@ Sugiyama 式分层布局：① 从**目标侧**枚举边（分支边只有从 In
 23. **`print('-sModelName')` 必失败**（"Error using ==> graphics"）——用
     `cap_window.ps1` 抓窗口。
 24. **worker `.m` 必须纯 ASCII/GBK**；UTF-8 中文注释会乱码并可能损坏字符串内容。
-25. **长任务要汇报进度**：eval 代码里调 `mcp_progress(k/n,'msg')`，
-    客户端用 `matlab_progress` 轮询。
+25. **长任务要汇报进度**：eval 代码里调 `mcp_progress(k/n,'msg')`；
+    `matlab_progress` 读回（事后查看——server 在 eval 运行期间是阻塞的）。
 26. **不支持 `[~,x]=sort(…)`**（波浪号忽略输出是 R2009b+）——手写排序 + find 循环。
 27. **struct 字段名不能含点**——用句柄字符串拼动态字段名时当心。
 28. **全路径 `load_system` 失败**（"There is no system named 'C:/…'"）——cd 到
@@ -367,8 +368,9 @@ MATLAB 通过 `-r` 以 GUI 进程启动。代码执行和仿真没问题，但�
 worker 空闲时可安全删除。
 
 **工具调用超时了——是死了吗？**
-先查 `matlab_status`：如果 worker 是 `busy`，说明还在跑——加大超时或轮询
-`matlab_progress`。只有 idle 且请求确认丢了才重试或 `matlab_restart`。
+先查 `matlab_status`：如果 worker 是 `busy`，说明还在跑——加大超时继续等，
+或 `matlab_restart` 中止。跑完（或重启）之后，`matlab_progress` 可以看到
+带 `mcp_progress` 打点的 eval 跑到了哪。只有 idle 且请求确认丢了才重试。
 
 **两个 MCP 客户端能共用一个 server 目录吗？**
 不能——文件协议（req.json/res.json）是单通道。每个客户端实例用自己的克隆
@@ -391,14 +393,18 @@ worker 空闲时可安全删除。
 
 ## 测试
 
+两层测试，clone 后即可运行：
+
 ```
-node v3_regress.js <仓库目录>
+node check_static.js          # 无需 MATLAB：ASCII/工具数/README/隐私一致性
+node v3_regress.js <仓库目录>   # 全量回归：真 server + 真 R14 worker，47 组断言
 ```
 
-起真 stdio server + 真 MATLAB worker，跑 34 组断言覆盖全部 22 个工具
+回归测试起真 stdio server + 真 MATLAB worker，跑 47 组断言覆盖全部 22 个工具
 （当前全过）。需要交互桌面会话（窗口截图）。`v3_smoke_window.js` 单测截图
 链路；`v3_smoke_arrange.js <模型路径>` 在任意 Simulink 模型上单测
-arrange+route 管线。
+arrange+route 管线。CI（GitHub Actions）在每次 push 时跑静态层；MATLAB 层
+依赖真机 R14，留在本地跑。
 
 ## 生命周期
 

@@ -183,7 +183,7 @@ for r2 = 1:numel(recs)
         details{end+1} = msg; %#ok<AGROW>
     end
 end
-% pass 3: convergence — routing branches can drag a trunk's anchor to a new
+% pass 3: convergence - routing branches can drag a trunk's anchor to a new
 % branch point (R14 moves Points(1,:) of every line sharing the src port).
 % Re-read anchors and re-route anything now non-orthogonal. Max 2 sweeps.
 for sweep = 1:2
