@@ -22,3 +22,4 @@ package-lock.json
 # OS
 Thumbs.db
 .DS_Store
+worker_boot.log.1

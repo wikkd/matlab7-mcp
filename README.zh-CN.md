@@ -295,7 +295,7 @@ Sugiyama 式分层布局：① 从**目标侧**枚举边（分支边只有从 In
 | `get(fig,'Number')` 返回字符串 'on' | 去掉 number 字段；最新在前排序 |
 | 数组按列主序序列化（与 JSON 惯例相悖） | 全部行主序；列向量平铺；N-D 嵌套；logical → 布尔 |
 
-## 踩坑全录（R14 vs 现代 MATLAB，30 条，全部在本仓库代码中规避）
+## 踩坑全录（R14 vs 现代 MATLAB，31 条，全部在本仓库代码中规避）
 
 1. **不支持 `catch err` 语法**（R2009b+ 才有）——用裸 `catch` + `lasterr`。
 2. **标识符不能以下划线开头**——`clear __x` 报 "Missing variable or function"。
@@ -344,6 +344,7 @@ Sugiyama 式分层布局：① 从**目标侧**枚举边（分支边只有从 In
     类型不同——布局后从 `PortHandles` 重读全部坐标；线不跟随块移动。
 30. **分支线锚在主干的分支点上**：独立分支线对象的 `Points` 首点被强制到那里，
     重布主干会迁移分支锚点——布线器需要收敛轮（否则红虚线/断线）。
+31. **脚本中歧义的 `end`**：当 `v` 只由 `load`/`sim` 在运行时创建时，`v(end)` 连解析都不过（"The construct v(...end...) is ambiguous... To make it a variable, assign to it"）——改用 `size(v,1)`/`length(v)` 取末元素。另外 `run('C:/全路径.m')` 会报截断错误，用 `cd` + 裸文件名。写 exp6/exp7 模型 setup 脚本时双双踩中。
 
 ## 常见问题
 

@@ -328,7 +328,7 @@ Real course models, sim outputs compared before/after:
 | `get(fig,'Number')` returns the string 'on' | number field dropped; newest-first ordering |
 | Arrays serialized column-major (against JSON convention) | Row-major everywhere; column vectors flattened; N-D nesting; logical → boolean |
 
-## Pitfall catalog (R14 vs modern MATLAB — 30 items, all circumvented in this codebase)
+## Pitfall catalog (R14 vs modern MATLAB — 31 items, all circumvented in this codebase)
 
 1. **`catch err` syntax unsupported** (R2009b+) — use bare `catch` + `lasterr`.
 2. **Identifiers can't start with underscore** — `clear __x` fails ("Missing variable or function").
@@ -360,6 +360,7 @@ Real course models, sim outputs compared before/after:
 28. **Full-path `load_system` fails** ("There is no system named 'C:/…'") — `cd` into the model folder and use the bare name; subsystem root names follow the swap.
 29. **`set_param(block,'Position',…)` auto-moves port anchors**, and port stub lengths vary by block type — re-read all coordinates from `PortHandles` after layout; lines don't follow moved blocks.
 30. **Branch lines anchor at the trunk's branch point**: independent branch-line objects' `Points` first point is forced there, and re-routing the trunk migrates branch anchors — routers need convergence passes (else red-dashed rendering / broken lines).
+31. **Ambiguous `end` in scripts**: `v(end)` fails to *parse* when `v` is only created at runtime by `load`/`sim` ("The construct v(...end...) is ambiguous... To make it a variable, assign to it") — index with `size(v,1)`/`length(v)` instead. Also `run('C:/full/path.m')` fails with a truncated error; use `cd` + bare name. Both hit while writing the exp6/exp7 model setup scripts.
 
 ## FAQ
 
