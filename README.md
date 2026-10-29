@@ -156,7 +156,7 @@ ask me instead of guessing.
 After the agent finishes, restart your MCP client and try
 *"list my MATLAB workspace"* to confirm.
 
-## Tools (22)
+## Tools (23)
 
 **Execution & diagnostics**
 
@@ -165,8 +165,9 @@ After the agent finishes, restart your MCP client and try
 | `matlab_eval` | Run code in the base workspace (including `sim('model')`); reliable syntax & runtime error reporting; optional `check_first` |
 | `matlab_check` | Syntax-check without running: block-keyword balance + full pcode parse |
 | `matlab_run_file` | Run a `.m` file (auto-clears its function cache, restores cwd) |
-| `matlab_status` / `matlab_restart` | Worker status (incl. current busy command) / restart |
-| `matlab_progress` | Read `mcp_progress(frac, msg)` markers from the last eval (server blocks mid-eval, so this is for post-timeout inspection) |
+| `matlab_status` / `matlab_restart` | Worker status (incl. busy command + elapsed seconds) / restart |
+| `matlab_last` | Output of the most recent completed job — rescues console text of evals whose tool call was cut by a client timeout |
+| `matlab_progress` | Read `mcp_progress(frac, msg)` markers from the last eval (v3.1: pollable WHILE the eval runs — the server no longer blocks) |
 
 **Data & files**
 
@@ -354,7 +355,7 @@ Real course models, sim outputs compared before/after:
 22. **Trimmed R14 has no checkcode/mlint** — syntax-check via pcode; but pcode tolerates a missing `end`, so run a textual block-keyword balance pre-pass first (mind parentheses: the `end` in `Points(end,:)` is not a block keyword).
 23. **`print('-sModelName')` always fails** ("Error using ==> graphics") — capture windows with `cap_window.ps1` instead.
 24. **Worker `.m` files must be ASCII/GBK**; UTF-8 Chinese comments become mojibake and can corrupt string contents.
-25. **Report progress on long tasks**: call `mcp_progress(k/n,'msg')` inside eval code; `matlab_progress` reads it back (post-hoc: the server blocks while the eval runs).
+25. **Report progress on long tasks**: call `mcp_progress(k/n,'msg')` inside eval code; `matlab_progress` reads it back (v3.1: pollable live during the run).
 26. **`[~,x] = sort(…)` unsupported** (tilde output-ignoring is R2009b+) — hand-rolled sort + find loops.
 27. **Struct field names can't contain dots** — beware dynamic field names built from handle strings.
 28. **Full-path `load_system` fails** ("There is no system named 'C:/…'") — `cd` into the model folder and use the bare name; subsystem root names follow the swap.
@@ -388,9 +389,11 @@ In `MCP_WORK_DIR` (default: the server's own folder). They're runtime
 artifacts, gitignored, and safe to delete while the worker is idle.
 
 **A tool call timed out — is it dead?**
-Check `matlab_status` first: if the worker is `busy`, it's still running —
-raise the timeout and wait, or `matlab_restart` to abort. After the run
-finishes (or you restart), `matlab_progress` shows how far a `mcp_progress`-
+**Long-job pattern (v3.1)**: fire the eval/run_file call (the MCP client may cut
+it at ~30 s — the job keeps running), poll `matlab_status` (busy? elapsed?) and
+`matlab_progress` (scripted markers), then collect the console output with
+`matlab_last`. If the worker is `busy` and you truly want to abort, use
+`matlab_restart`. After the run finishes (or you restart), `matlab_progress` shows how far a `mcp_progress`-
 instrumented eval got. Retry only if the worker is idle and the request was lost.
 
 **Can two MCP clients share one server folder?**

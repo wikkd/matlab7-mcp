@@ -150,8 +150,9 @@ AI 部署完成后，重启 MCP 客户端，说一句"列出我的 MATLAB worksp
 | `matlab_eval` | base workspace 执行代码（含 `sim('model')`）；语法/运行时错误可靠上报；可选 `check_first` 先查后跑 |
 | `matlab_check` | 语法检查不运行：块关键字配平 + pcode 全量解析 |
 | `matlab_run_file` | 运行 `.m` 文件（自动 clear 该函数缓存、恢复工作目录） |
-| `matlab_status` / `matlab_restart` | worker 状态（含当前 busy 命令）/ 重启 |
-| `matlab_progress` | 读回最近一次 eval 里 `mcp_progress(frac, msg)` 的打点（server 在 eval 期间阻塞，适合超时后查看跑到哪了） |
+| `matlab_status` / `matlab_restart` | worker 状态（含 busy 命令与已耗时）/ 重启 |
+| `matlab_last` | 最近一次已完成任务的输出——抢救被客户端超时切断的 eval 的控制台文本 |
+| `matlab_progress` | 读回最近一次 eval 里 `mcp_progress(frac, msg)` 的打点（v3.1 起可边跑边轮询——server 不再阻塞） |
 
 **数据与文件**
 
@@ -335,7 +336,7 @@ Sugiyama 式分层布局：① 从**目标侧**枚举边（分支边只有从 In
     `cap_window.ps1` 抓窗口。
 24. **worker `.m` 必须纯 ASCII/GBK**；UTF-8 中文注释会乱码并可能损坏字符串内容。
 25. **长任务要汇报进度**：eval 代码里调 `mcp_progress(k/n,'msg')`；
-    `matlab_progress` 读回（事后查看——server 在 eval 运行期间是阻塞的）。
+    `matlab_progress` 读回（v3.1 起可边跑边轮询）。
 26. **不支持 `[~,x]=sort(…)`**（波浪号忽略输出是 R2009b+）——手写排序 + find 循环。
 27. **struct 字段名不能含点**——用句柄字符串拼动态字段名时当心。
 28. **全路径 `load_system` 失败**（"There is no system named 'C:/…'"）——cd 到

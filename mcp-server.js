@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * matlab7-mcp-server v3 — MCP stdio server bridging to MATLAB 7.0 (R14)
+ * matlab7-mcp-server v3.1 — MCP stdio server bridging to MATLAB 7.0 (R14)
  * via a persistent mcp_worker.m process (file-based JSON protocol).
  *
  * Zero npm dependencies. Node >= 16.
@@ -24,6 +24,21 @@
  *   - matlab_progress: read mcp_progress() markers from long evals.
  *   - eval warns when user code contains bare clear/clear all (wipes the
  *     marker + loop variables; classic "Reference to a cleared variable").
+ *
+ * v3.1 changes (2026-10-30, battle damage from the EV energy/range project):
+ *   - NON-BLOCKING request dispatch: waitForResponse now polls asynchronously,
+ *     so the server keeps serving tools/list, matlab_status and matlab_progress
+ *     while a long eval/sim runs. Previously one long MATLAB call froze the
+ *     whole server (Atomics.wait) — even status timed out and the only escape
+ *     was matlab_restart.
+ *   - matlab_last: fetch the most recent completed worker response. When a
+ *     client-side tool timeout abandons a request, the job keeps running in
+ *     MATLAB and its console output used to be lost; now it is always
+ *     retrievable (response archived to res_last.json).
+ *   - matlab_status shows busy-elapsed seconds so polling long jobs is usable.
+ *   - Long-job pattern (documented in eval/run_file descriptions): fire the
+ *     call (the client may cut it at ~30 s — that is fine), then poll with
+ *     matlab_status / matlab_progress, then collect with matlab_last.
  *
  * Env vars:
  *   MATLAB7_DIR    MATLAB root, e.g. D:\MATLAB7   (default: auto-detect)
@@ -65,6 +80,7 @@ const SERVER_DIR = __dirname;
 const WORK_DIR = process.env.MCP_WORK_DIR || SERVER_DIR;
 const REQ_FILE = path.join(WORK_DIR, 'req.json');
 const RES_FILE = path.join(WORK_DIR, 'res.json');
+const RES_LAST_FILE = path.join(WORK_DIR, 'res_last.json');
 const PID_FILE = path.join(WORK_DIR, 'worker.pid');
 const BUSY_FILE = path.join(WORK_DIR, 'busy.json');
 const PROGRESS_FILE = path.join(WORK_DIR, 'progress.json');
@@ -122,7 +138,7 @@ function handleMcpLine(line) {
     rpcResult(msg.id, {
       protocolVersion: msg.params?.protocolVersion || '2024-11-05',
       capabilities: { tools: {} },
-      serverInfo: { name: 'matlab7-mcp-server', version: '3.0.0' },
+      serverInfo: { name: 'matlab7-mcp-server', version: '3.1.0' },
     });
     return;
   }
@@ -160,6 +176,9 @@ let workerVersion = '';
 function sleepSync(ms) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
 
 function readPid() {
   try {
@@ -177,7 +196,7 @@ function readBusy() {
   try { return JSON.parse(fs.readFileSync(BUSY_FILE, 'utf8')); } catch { return null; }
 }
 
-function killStaleWorker() {
+async function killStaleWorker() {
   const pid = readPid();
   if (pid && pidAlive(pid)) {
     try { spawnSync('taskkill', ['/PID', String(pid), '/F']); } catch {}
@@ -189,7 +208,7 @@ function killStaleWorker() {
   }
   for (let i = 0; i < 20; i++) {
     if (!pidAlive(pid)) break;
-    sleepSync(500);
+    await sleep(500);
   }
   // clear protocol files from any previous session
   for (const f of [REQ_FILE, RES_FILE, BUSY_FILE]) {
@@ -197,7 +216,7 @@ function killStaleWorker() {
   }
 }
 
-function startWorker() {
+async function startWorker() {
   if (!MATLAB_EXE) throw new Error('MATLAB 7.0 not found. Set MATLAB7_DIR env var.');
   killStaleWorker();
   // Rotate the boot log so it cannot grow without bound (R14 appends forever).
@@ -208,7 +227,7 @@ function startWorker() {
   // progress.json from a previous session would make matlab_progress report
   // stale numbers before the first eval of this session has run.
   try { if (fs.existsSync(PROGRESS_FILE)) fs.unlinkSync(PROGRESS_FILE); } catch {}
-  const code = `cd('${WORK_DIR.replace(/\\/g, '/')}'), addpath(pwd), mcp_worker('req.json','res.json','worker.pid','busy.json'), exit`;
+  const code = `cd('${WORK_DIR.replace(/\\/g, '/')}'), addpath('${SERVER_DIR.replace(/\\/g, '/')}'), mcp_worker('req.json','res.json','worker.pid','busy.json'), exit`;
   workerProc = spawn(MATLAB_EXE, ['-nosplash', '-nodesktop', '-logfile', path.join(WORK_DIR, 'worker_boot.log'), '-r', code], {
     cwd: WORK_DIR,
     detached: false,
@@ -228,48 +247,63 @@ function startWorker() {
         }
       } catch {}
     }
-    sleepSync(500);
+    await sleep(500); // v3.1: yield to the event loop while booting
   }
   throw new Error(`MATLAB worker failed to boot within ${BOOT_WAIT_SEC}s`);
 }
 
-function ensureWorker() {
+async function ensureWorker() {
   const pid = readPid();
   if (!pid || !pidAlive(pid)) {
-    startWorker();
+    await startWorker();
   }
+}
+
+/** Archive the current res.json to res_last.json (best-effort: attach the
+ *  busy cmd when the worker has not cleared busy.json yet). */
+function archiveRes() {
+  try {
+    const j = JSON.parse(fs.readFileSync(RES_FILE, 'utf8'));
+    try {
+      const b = JSON.parse(fs.readFileSync(BUSY_FILE, 'utf8'));
+      if (b && b.cmd && Number(b.id) === Number(j.id)) j.cmd = b.cmd;
+    } catch {}
+    fs.writeFileSync(RES_LAST_FILE, JSON.stringify(j), 'utf8');
+  } catch {}
 }
 
 /**
  * Send a request to the worker and wait for the matching response.
- * Blocking (synchronous) on purpose: MCP tool calls are sequential here.
+ * ASYNC on purpose (v3.1): the Node event loop must stay free so that
+ * matlab_status / matlab_progress / tools/list remain responsive while a
+ * long MATLAB job runs. A client-side tool timeout no longer wedges the
+ * server: the abandoned promise resolves later and its output is archived
+ * to res_last.json for matlab_last.
  */
-function workerRequest(payload, timeoutSec) {
-  ensureWorker();
-  const id = nextId++;
+async function workerRequest(payload, timeoutSec) {
+  await ensureWorker();  const id = nextId++;
   const req = JSON.stringify(Object.assign({ id }, payload));
-  // 1) clear old response
+  // 1) archive + clear any previous response (matlab_last can still read it)
+  archiveRes();
   try { fs.unlinkSync(RES_FILE); } catch {}
   // 2) write request atomically (write tmp, rename)
   const tmp = REQ_FILE + '.tmp';
   fs.writeFileSync(tmp, req, 'utf8');
   fs.renameSync(tmp, REQ_FILE);
-  // 3) wait for response via fs.watch (fall back to polling)
+  // 3) wait for the matching response by polling
   return waitForResponse(id, timeoutSec * 1000);
 }
 
-function waitForResponse(id, timeoutMs) {
+async function waitForResponse(id, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
-  let watcher = null;
-  const cleanup = () => { try { watcher && watcher.close(); } catch {} };
 
   const check = () => {
     if (!fs.existsSync(RES_FILE)) return null;
     try {
       const j = JSON.parse(fs.readFileSync(RES_FILE, 'utf8'));
       if (j.id === id) {
+        archiveRes();
         try { fs.unlinkSync(RES_FILE); } catch {}
-        cleanup();
         return j;
       }
       // stale/mismatched response — keep waiting (worker may still be writing)
@@ -280,22 +314,17 @@ function waitForResponse(id, timeoutMs) {
   let result = check();
   if (result) return result;
 
-  try {
-    watcher = fs.watch(WORK_DIR, () => {});
-  } catch {}
-
   while (Date.now() < deadline) {
+    // yield to the event loop so other MCP requests keep flowing
+    await new Promise((r) => setTimeout(r, 100));
     result = check();
     if (result) return result;
     // abort if worker died
     const pid = readPid();
     if (!pid || !pidAlive(pid)) {
-      cleanup();
       throw new Error('MATLAB worker died mid-request (check worker_boot.log)');
     }
-    sleepSync(100);
   }
-  cleanup();
   // Timeout: report what the worker was doing so the caller can decide to
   // wait more or restart. The MATLAB job itself keeps running.
   const busy = readBusy();
@@ -320,6 +349,9 @@ const TOOLS = [
       + 'Syntax errors AND runtime errors are both reported reliably.' + R14_NOTES
       + ' Figure windows may be created; close them or use matlab_figure_png / matlab_figures. '
       + 'For long runs call mcp_progress(frac,msg) inside the loop, then matlab_progress to poll. '
+      + 'LONG-JOB PATTERN (v3.1): jobs outliving the client tool timeout (~30 s) keep running; '
+      + 'poll matlab_status/matlab_progress while they run, then collect the console output with '
+      + 'matlab_last. Keep each single call under ~25 s when possible (e.g. chunk long loops). '
       + 'A bare "clear"/"clear all" in the code wipes loop variables and triggers a warning — use "clear <name>".',
     inputSchema: {
       type: 'object',
@@ -346,7 +378,9 @@ const TOOLS = [
     name: 'matlab_run_file',
     description: 'Run a .m script/function file in MATLAB base workspace (absolute path). '
       + 'Clears the function cache for that file first (picks up edits), cds into its folder, '
-      + 'and always restores the previous working directory afterwards.',
+      + 'and always restores the previous working directory afterwards. '
+      + 'LONG-JOB PATTERN (v3.1): if the client cuts the call (~30 s) the script keeps running; '
+      + 'poll matlab_status/matlab_progress, then collect output with matlab_last.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -571,14 +605,22 @@ const TOOLS = [
     name: 'matlab_progress',
     description: 'Read progress of the LAST eval that called mcp_progress(frac, msg): '
       + 'returns {pct, msg} or "(no progress reported)". '
-      + 'NOTE: the server blocks while an eval is running, so you cannot poll '
-      + 'mid-eval — use this after a timeout to see how far the run got '
-      + '(the worker keeps running after a tool timeout).',
+      + 'Since v3.1 the server stays responsive during long runs, so you can poll '
+      + 'this (and matlab_status) WHILE an eval is running.',
+    inputSchema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'matlab_last',
+    description: 'Fetch the most recent completed worker response (cmd, ok, stdout/error). '
+      + 'Use this when a long eval/run_file tool call was cut by the client-side '
+      + 'timeout: the MATLAB job keeps running and its console output is archived '
+      + 'here when it finishes. Long-job pattern: fire -> poll matlab_status / '
+      + 'matlab_progress -> collect with matlab_last.',
     inputSchema: { type: 'object', properties: {} },
   },
   {
     name: 'matlab_status',
-    description: 'Get MATLAB worker status: PID, alive, boot time, MATLAB version, and what command it is busy with right now.',
+    description: 'Get MATLAB worker status: PID, alive, boot time, MATLAB version, and what command it is busy with right now (with elapsed seconds). Never blocks, even during long jobs.',
     inputSchema: { type: 'object', properties: {} },
   },
   {
@@ -605,16 +647,16 @@ async function callTool(name, args) {
     case 'matlab_eval': {
       const timeout = Math.min(1800, Math.max(1, args.timeout_sec || 120));
       if (args.check_first) {
-        const c = workerRequest({ cmd: 'check', code: String(args.code) }, 60);
+        const c = await workerRequest({ cmd: 'check', code: String(args.code) }, 60);
         if (c.ok && c.value && c.value.clean === false) {
           return textOut('Syntax check failed — not run.\n' + c.value.issues, true);
         }
       }
-      const r = workerRequest({ cmd: 'eval', code: String(args.code) }, timeout);
+      const r = await workerRequest({ cmd: 'eval', code: String(args.code) }, timeout);
       return textOut(truncate((r.stdout || '').replace(/\r\n/g, '\n').trim()), !r.ok);
     }
     case 'matlab_check': {
-      const r = workerRequest({ cmd: 'check', code: String(args.code) }, 60);
+      const r = await workerRequest({ cmd: 'check', code: String(args.code) }, 60);
       if (!r.ok) return textOut('Error: ' + (r.error || 'unknown'), true);
       const v = r.value || {};
       return textOut(v.clean ? 'OK — code parses clean.' : ('Parse issues:\n' + v.issues), !v.clean);
@@ -623,16 +665,16 @@ async function callTool(name, args) {
       const p = String(args.path || '');
       if (!fs.existsSync(p)) throw new Error('File not found: ' + p);
       const timeout = Math.min(1800, Math.max(1, args.timeout_sec || 300));
-      const r = workerRequest({ cmd: 'run_file', file: p }, timeout);
+      const r = await workerRequest({ cmd: 'run_file', file: p }, timeout);
       return textOut(truncate((r.stdout || '').replace(/\r\n/g, '\n').trim()), !r.ok);
     }
     case 'matlab_get_var': {
-      const r = workerRequest({ cmd: 'get', var: String(args.name) }, 60);
+      const r = await workerRequest({ cmd: 'get', var: String(args.name) }, 60);
       if (!r.ok) return textOut('Error: ' + (r.error || 'unknown'), true);
       return textOut(JSON.stringify(r.value, null, 1));
     }
     case 'matlab_summary': {
-      const r = workerRequest({
+      const r = await workerRequest({
         cmd: 'summary',
         var: String(args.name),
         max_rows: Number.isFinite(args.max_rows) ? args.max_rows : 200,
@@ -642,18 +684,18 @@ async function callTool(name, args) {
     }
     case 'matlab_set_var': {
       const vj = JSON.stringify(args.value);
-      const r = workerRequest({ cmd: 'set', var: String(args.name), value_json: vj }, 60);
+      const r = await workerRequest({ cmd: 'set', var: String(args.name), value_json: vj }, 60);
       if (!r.ok) return textOut('Error: ' + (r.error || 'unknown'), true);
       return textOut(`Set ${args.name} OK`);
     }
     case 'matlab_workspace': {
-      const r = workerRequest({ cmd: 'ws' }, 60);
+      const r = await workerRequest({ cmd: 'ws' }, 60);
       if (!r.ok) return textOut('Error: ' + (r.error || 'unknown'), true);
       const lines = (r.value || []).map((v) => `${v.name}  ${v.class}  ${v.size}`);
       return textOut(lines.length ? lines.join('\n') : '(empty workspace)');
     }
     case 'matlab_write_file': {
-      const r = workerRequest({
+      const r = await workerRequest({
         cmd: 'write_file',
         file: String(args.path),
         content: String(args.content ?? ''),
@@ -663,7 +705,7 @@ async function callTool(name, args) {
       return textOut(r.stdout || 'written');
     }
     case 'matlab_append_file': {
-      const r = workerRequest({
+      const r = await workerRequest({
         cmd: 'append',
         file: String(args.path),
         text: String(args.text ?? ''),
@@ -673,7 +715,7 @@ async function callTool(name, args) {
       return textOut(r.stdout || 'appended');
     }
     case 'matlab_read_file': {
-      const r = workerRequest({
+      const r = await workerRequest({
         cmd: 'read_file',
         file: String(args.path),
         enc: String(args.enc || 'auto'),
@@ -682,7 +724,7 @@ async function callTool(name, args) {
       return textOut(truncate(r.value ?? ''));
     }
     case 'matlab_dir': {
-      const r = workerRequest({ cmd: 'dir', file: String(args.path || '.') }, 60);
+      const r = await workerRequest({ cmd: 'dir', file: String(args.path || '.') }, 60);
       if (!r.ok) return textOut('Error: ' + (r.error || 'unknown'), true);
       const lines = (r.value || []).map((d) => `${d.isdir ? '<DIR> ' : ''}${d.name}${d.isdir ? '' : '  ' + d.bytes + ' B'}`);
       return textOut(lines.length ? lines.join('\n') : '(empty)');
@@ -691,7 +733,7 @@ async function callTool(name, args) {
       figCounter += 1;
       const fig = Number.isFinite(args.fig) ? args.fig : 0;
       const file = args.file || path.join(WORK_DIR, `figure_${Date.now()}.png`);
-      const r = workerRequest({
+      const r = await workerRequest({
         cmd: 'put_png',
         fig,
         file,
@@ -739,13 +781,13 @@ async function callTool(name, args) {
       };
     }
     case 'matlab_figures': {
-      const r = workerRequest({ cmd: 'figs' }, 30);
+      const r = await workerRequest({ cmd: 'figs' }, 30);
       if (!r.ok) return textOut('Error: ' + (r.error || 'unknown'), true);
       const lines = (r.value || []).map((f, i) => `handle ${f.handle}  (newest=${i === 0})  ${f.visible}${f.name ? '  "' + f.name + '"' : ''}`);
       return textOut(lines.length ? lines.join('\n') : '(no open figures)');
     }
     case 'matlab_sim_info': {
-      const r = workerRequest({
+      const r = await workerRequest({
         cmd: 'sim_info',
         model: String(args.model),
         fix: args.fix ? 1 : 0,
@@ -754,7 +796,7 @@ async function callTool(name, args) {
       return textOut(JSON.stringify(r.value, null, 1));
     }
     case 'matlab_sim_clean': {
-      const r = workerRequest({
+      const r = await workerRequest({
         cmd: 'sim_clean',
         model: String(args.model),
       }, 120);
@@ -762,7 +804,7 @@ async function callTool(name, args) {
       return textOut(JSON.stringify(r.value, null, 1));
     }
     case 'matlab_sim_route': {
-      const r = workerRequest({
+      const r = await workerRequest({
         cmd: 'sim_route',
         model: String(args.model),
         spacing: Number.isFinite(args.spacing) ? args.spacing : 30,
@@ -779,7 +821,7 @@ async function callTool(name, args) {
       return textOut(out, (v.failed || 0) > 0);
     }
     case 'matlab_sim_arrange': {
-      const r = workerRequest({
+      const r = await workerRequest({
         cmd: 'sim_arrange',
         model: String(args.model),
         sys: String(args.sys || ''),
@@ -792,7 +834,7 @@ async function callTool(name, args) {
         'Follow with matlab_sim_route to re-route the lines.');
     }
     case 'matlab_cleanup': {
-      const r = workerRequest({
+      const r = await workerRequest({
         cmd: 'closeall',
         close_figs: args.close_figs ? 1 : 0,
         close_models: args.close_models ? 1 : 0,
@@ -811,23 +853,46 @@ async function callTool(name, args) {
       }
       return textOut(`progress: ${pct}% ${msg}`.trimEnd());
     }
+    case 'matlab_last': {
+      // Prefer an unclaimed res.json: if a finished job's response is still
+      // sitting there (client cut the call before the server-side promise
+      // consumed it), it IS the most recent completed output.
+      let j = null;
+      try { j = JSON.parse(fs.readFileSync(RES_FILE, 'utf8')); } catch {}
+      if (!j || j.id === undefined) {
+        try { j = JSON.parse(fs.readFileSync(RES_LAST_FILE, 'utf8')); } catch {}
+      }
+      if (!j) return textOut('(no completed worker response archived yet)');
+      const head = `cmd=${j.cmd || '?'}  ok=${j.ok}  id=${j.id}`;
+      const body = j.ok
+        ? truncate((j.stdout || '').replace(/\r\n/g, '\n').trim() || '(no stdout)')
+        : ('Error: ' + (j.error || 'unknown'));
+      return textOut(head + '\n' + body, !j.ok);
+    }
     case 'matlab_status': {
       const pid = readPid();
       const alive = pidAlive(pid);
       const busy = readBusy();
+      let busyLine = 'Busy: no (idle)';
+      if (busy) {
+        let elapsed = '';
+        const t = Date.parse(busy.since || '');
+        if (Number.isFinite(t)) elapsed = `, ${Math.round((Date.now() - t) / 1000)}s elapsed`;
+        busyLine = `Busy: cmd="${busy.cmd}" since ${busy.since} (req id=${busy.id}${elapsed})`;
+      }
       const lines = [
         `MATLAB exe: ${MATLAB_EXE || '(not found)'}`,
         `Worker PID: ${pid || '-'}  alive: ${alive}`,
         `Booted at: ${workerBootedAt || '-'}`,
         `MATLAB version: ${workerVersion || '-'}`,
-        busy ? `Busy: cmd="${busy.cmd}" since ${busy.since} (req id=${busy.id})` : 'Busy: no (idle)',
+        busyLine,
         `Work dir: ${WORK_DIR}`,
         `Kill-all mode: ${KILL_ALL ? 'on (MCP_KILL_ALL=1)' : 'off (only pidfile PID is killed)'}`,
       ];
       return textOut(lines.join('\n'));
     }
     case 'matlab_restart': {
-      startWorker();
+      await startWorker();
       return textOut(`Worker restarted (PID ${readPid()})`);
     }
     default:
@@ -845,6 +910,6 @@ function shutdown() {
 
 // -------------------------------------------------------------------- main
 try { fs.mkdirSync(WORK_DIR, { recursive: true }); } catch {}
-send({ jsonrpc: '2.0', method: 'notifications/log', params: { level: 'info', data: `matlab7-mcp-server v3 ready (${TOOLS.length} tools)` } });
+send({ jsonrpc: '2.0', method: 'notifications/log', params: { level: 'info', data: `matlab7-mcp-server v3.1 ready (${TOOLS.length} tools)` } });
 // Keep the process alive; worker starts lazily on first tool call.
 setInterval(() => {}, 1 << 30);
