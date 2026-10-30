@@ -23,3 +23,4 @@ package-lock.json
 Thumbs.db
 .DS_Store
 worker_boot.log.1
+res_last.json
