@@ -34,13 +34,13 @@ const unique = new Set(toolDefs);
 check('server:unique-names', unique.size === toolDefs.length, '');
 
 // ---- 3. README tool-count agreement ---------------------------------------
-// EN: "22 tools" / "Tools (22)";  ZH: "22 个工具" / "工具清单（22 个）"
+// counts must agree with the actual tool definition count in the server
 for (const readme of ['README.md', 'README.zh-CN.md']) {
   const md = fs.readFileSync(path.join(ROOT, readme), 'utf8');
   const counts = [...md.matchAll(/(\d+)\s*tools|\(\s*(\d+)\s*\)\s*$|(\d+)\s*个工具|工具清单（(\d+)\s*个/gm)]
     .map((m) => parseInt(m[1] || m[2] || m[3] || m[4], 10))
     .filter((n) => Number.isFinite(n));
-  const ok = counts.length > 0 && counts.every((n) => n === 22);
+  const ok = counts.length > 0 && counts.every((n) => n === toolDefs.length);
   check(`readme:${readme}:toolcount`, ok, counts.length ? counts.join(',') : 'no count found');
 }
 

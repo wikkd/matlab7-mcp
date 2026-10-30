@@ -20,7 +20,8 @@ function report = mcp_sim_arrange(model, opts)
 % are atomic (their internals are untouched).
 
 xgap = 90;          % horizontal slot width per layer
-ygap = 35;          % vertical gap between rows
+ygap = 45;          % vertical gap between rows (>= 45 leaves a clear lane
+                    % corridor below the ~15 px name labels; v2 route uses it)
 x0 = 40;            % left margin
 y0 = 40;            % top margin
 sys = model;

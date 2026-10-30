@@ -2,7 +2,7 @@
 
 # matlab7-mcp
 
-**让 AI 助手操控 MATLAB 7.0 (R14, 2004) 的 MCP 服务器——22 个工具、零 npm 依赖、Simulink 正交自动布线与块自动重排**
+**让 AI 助手操控 MATLAB 7.0 (R14, 2004) 的 MCP 服务器——23 个工具、零 npm 依赖、Simulink 正交自动布线与块自动重排**
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
@@ -54,7 +54,7 @@ MCP客户端 ──MCP stdio──> mcp-server.js (Node, 零依赖)
                        base workspace / figure / Simulink
 ```
 
-- `mcp-server.js` — MCP stdio 服务器：22 个工具定义、参数校验、请求文件、
+- `mcp-server.js` — MCP stdio 服务器：23 个工具定义、参数校验、请求文件、
   `fs.watch` 响应监视（100ms 兜底轮询）、`busy.json` 心跳。
 - `mcp_worker.m` — R14 内常驻 worker：轮询请求 → base workspace 求值 →
   diary 捕获输出 → 序列化写响应。**所有分支都有 catch，worker 必定回话。**
@@ -141,7 +141,7 @@ README，全部由你自己完成：
 
 AI 部署完成后，重启 MCP 客户端，说一句"列出我的 MATLAB workspace"即可确认。
 
-## 工具清单（22 个）
+## 工具清单（23 个）
 
 **执行与诊断**
 
@@ -257,7 +257,7 @@ Sugiyama 式分层布局：① 从**目标侧**枚举边（分支边只有从 In
    打点和循环变量，把失败伪装成成功（eval 工具现在会检测并警告）。
 8. **回归测试是每次重构的安全网。**47 组断言跑在真 stdio server + 真 MATLAB
    上（GBK 往返、NaN 序列化、幽灵线审计、clear 警告与 progress 生命周期），
-   让 22 个工具的 v3 大修零伤亡落地。
+   让 23 个工具的 v3 大修零伤亡落地。
 
 ## 版本演进
 
@@ -402,7 +402,7 @@ node check_static.js          # 无需 MATLAB：ASCII/工具数/README/隐私一
 node v3_regress.js <仓库目录>   # 全量回归：真 server + 真 R14 worker，47 组断言
 ```
 
-回归测试起真 stdio server + 真 MATLAB worker，跑 47 组断言覆盖全部 22 个工具
+回归测试起真 stdio server + 真 MATLAB worker，跑 47 组断言覆盖全部 23 个工具
 （当前全过）。需要交互桌面会话（窗口截图）。`v3_smoke_window.js` 单测截图
 链路；`v3_smoke_arrange.js <模型路径>` 在任意 Simulink 模型上单测
 arrange+route 管线。CI（GitHub Actions）在每次 push 时跑静态层；MATLAB 层

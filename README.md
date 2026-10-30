@@ -3,7 +3,7 @@
 # matlab7-mcp
 
 **An MCP server that lets AI agents drive MATLAB 7.0 (R14, 2004) on Windows —
-22 tools, zero npm dependencies, Simulink orthogonal auto-routing & block auto-arrangement**
+23 tools, zero npm dependencies, Simulink orthogonal auto-routing & block auto-arrangement**
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
@@ -230,6 +230,31 @@ orthogonality**, with up to two convergence sweeps for anchors dragged around
 by R14. It **never deletes lines and never moves blocks**; it reports ghost
 duplicate-destination rows (red-dashed render artifacts that don't affect sims).
 
+v3 routing-quality rules (2026-10-30, built for "no line through text, tidy
+junctions"):
+
+1. **Name labels are obstacles.** Every visible block name label becomes a
+   routing rect (width measured via Java font metrics of the Simulink canvas
+   font, 6 px/char fallback; R14 default label position is below the block).
+   No lane may run through label text — the old label-blind router drew long
+   branch lanes straight through "BPSK Modulator Baseband".
+2. **Straight runs must be clear.** A same-Y line only stays straight when
+   nothing sits between src and dst; otherwise it detours.
+3. **Vertical legs are checked too** (anchor-lane and go-around strategies
+   verify both vertical legs, not just the horizontal run).
+4. **Go-around lanes are scanned**, not extrapolated from blocker extremes —
+   extremes reach absurd depths when the x-span covers many rows and miss the
+   clean corridors between them.
+5. **Multi-dst ports get a junction stub.** The parent polyline is reduced to
+   a stub ending at J = `[port_x+12, port_y]`; R14 anchors every branch
+   segment at the parent's last point, so all branches fork from a clean T
+   right after the source port. (v1 re-routed the parent toward its LAST dst,
+   which dragged the junction to that dst's doorstep.) If some dst sits on
+   the port row behind blockers, J drops below the source's own name label —
+   a same-row branch segment can never hold a detour (law 8 below).
+6. **Soft fallback**: when no lane clears labels+bodies, retry with block
+   bodies only — v3 is never worse than the label-blind v2.
+
 ### Verified results
 
 Real course models, sim outputs compared before/after:
@@ -260,6 +285,25 @@ Real course models, sim outputs compared before/after:
    lines = ghost" rule** — it deletes legitimate branch rows (we lost 45 and
    rebuilt the model by formula). This router only reports; deletion goes
    through `matlab_sim_info`'s opt-in fix.
+7. **A branch segment's anchor is the parent polyline's LAST point**, not an
+   interior vertex — R14 re-pins every sibling segment's `Points(1,:)` to it
+   whenever the parent is re-routed. Junction placement = choose where the
+   parent polyline ends.
+8. **A same-row branch segment (anchor row == dst row) always shears into a
+   diagonal**: R14 replaces any detour middles with the canonical
+   `[...]→(dst,dy)→(dst+10,dy)` tail. No middle list survives. Route such
+   connections from a junction dropped off the shared row instead.
+9. **Segment middles must end at the canonical elbow `(dst-10, dy)`**, and
+   the SAFE-Z `(c-8,sy)/(c,sy)` pair trick must NOT be used on segments (a
+   pair makes R14 drop the channel). Trunks are the opposite: pairs required,
+   arbitrary tails get force-normalized. Probe-verified shapes:
+   trunk `[P0;(c-8,sy);(c,sy);(c,dy);(dx-10,dy)]`,
+   segment `[P0;(c,sy);(c,dy);(dx-10,dy)]`.
+10. **Block name labels are NOT exposed geometry.** Masked blocks reject
+   `NameLocation`; measure text with
+   `java.awt.Toolkit.getDefaultToolkit.getFontMetrics(Font('Helvetica',0,10))`
+   (R14 rejects chained static calls — two steps) and assume below-block
+   placement.
 
 ## Lessons learned (2 versions of battle damage, distilled)
 
@@ -290,7 +334,7 @@ Real course models, sim outputs compared before/after:
 8. **Regression tests are the safety net for every refactor.** 47 assertions
    over a real stdio server + real MATLAB (GBK round-trips, NaN serialization,
    ghost audits, clear-warning and progress lifecycle) made the v3 overhaul of
-   22 tools land without casualties.
+   23 tools land without casualties.
 
 ## Changelog
 
@@ -427,7 +471,7 @@ node v3_regress.js <repo>     # full regression: real server + real R14 worker, 
 ```
 
 The regression boots a real stdio server + real MATLAB worker and runs 46
-assertions across all 22 tools (currently all passing). Requires an
+assertions across all 23 tools (currently all passing). Requires an
 interactive desktop session (window capture). `v3_smoke_window.js` tests the
 capture chain; `v3_smoke_arrange.js <model path>` tests the arrange+route
 pipeline on any Simulink model. CI (GitHub Actions) runs the static layer on
