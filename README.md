@@ -254,6 +254,17 @@ junctions"):
    a same-row branch segment can never hold a detour (law 8 below).
 6. **Soft fallback**: when no lane clears labels+bodies, retry with block
    bodies only — v3 is never worse than the label-blind v2.
+7. **Calibrate the tail with a canonicalization probe (v3.1).** Port stub
+   semantics vary by block type (law 4): `get_param Position` may be the dst
+   point OR already R14's elbow (true dst = Position ± (10,0) on the
+   approach column). The router writes a bare `[P0;dp]` and reads back the
+   tail R14 appends to calibrate ex/dx/dy per line; if a set still gets
+   sheared (Sum inports fed from above/below hide their tail from the bare
+   probe), it learns the true (dst, elbow) from the appended points and
+   retries the next strategy calibrated. Deterministic exp6 elbow shears
+   (Gain1/Gain_m/Constant_Ff) came exactly from this. Known cosmetic limit:
+   the ~10px entry stub of a top/bottom-fed Sum port crosses that block's
+   own name label — unavoidable, R14 draws the stub there anyway.
 
 ### Verified results
 
