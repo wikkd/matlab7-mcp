@@ -422,15 +422,30 @@ try
     end
     P0 = Pcur(1, :);
     dp = get_param(dstPort, 'Position');
-    Pn = dp(1:2);
+    dp = dp(1:2);
 
-    sx = P0(1); sy = P0(2);
-    dx = Pn(1); dy = Pn(2);
+    % v3.1 canonicalization probe: write a bare [P0; dp] and read back the
+    % tail R14 appends. Port stub semantics vary by block type (README law
+    % 4): for some ports get_param Position IS the dst point, for others it
+    % is already the elbow (true dst = Position + (10,0)). Routing with the
+    % wrong assumption puts our elbow point 10 px off R14's, which deletes
+    % it and shears the final approach into a diagonal (exp6
+    % Gain1/Gain_m/Constant_Ff, deterministic across runs).
+    set_param(lineH, 'Points', [P0; dp]);
+    Pp = get_param(lineH, 'Points');
+    sx = Pp(1, 1);
+    sy = Pp(1, 2);
+    dx = Pp(end, 1);
+    dy = Pp(end, 2);
+    if size(Pp, 1) >= 3
+        ex = Pp(end - 1, 1);   % R14's own elbow x for this port
+    else
+        ex = dx - 10;
+    end
 
-    % same row: straight line ONLY when the run is clear (v2: a straight
-    % line must never pass through a block body or a name label)
-    if abs(sy - dy) < 0.5 && ~seg_blocked_h(sx, dx, sy, R)
-        set_param(lineH, 'Points', [sx sy; dx dy]);
+    % straight when R14's own canonical form is a clear same-row run
+    if abs(sy - dy) < 0.5 && size(Pp, 1) <= 3 && ...
+            ~seg_blocked_h(sx, dx, sy, R)
         ok = true;
         msg = 'straight';
         return;
@@ -475,29 +490,39 @@ try
     if ~isempty(chosen)
         cx = chosen;
         if isTrunk
-            % [P0; (c-8,P0y); (c,P0y); (c,Pny); (dstx-10,Pny)]
+            % [P0; (c-8,P0y); (c,P0y); (c,Pny); (elbow,Pny)]
             % pair (c-8,c) survives R14 collinear compression on trunks
-            P = [sx sy; cx - 8, sy; cx, sy; cx, dy; dx - 10, dy];
+            P = [sx sy; cx - 8, sy; cx, sy; cx, dy; ex, dy];
         else
             % v3 segment pattern (probe-proven 2026-10-30): NO pair on the
             % exit row (a pair makes R14 drop the channel) and the middle
-            % list MUST end at the canonical elbow (dstx-10, dsty) -- R14
-            % then appends dst and stores the polyline verbatim.
-            P = [sx sy; cx, sy; cx, dy; dx - 10, dy];
+            % list MUST end at the canonical elbow -- R14 then appends dst
+            % and stores the polyline verbatim.
+            P = [sx sy; cx, sy; cx, dy; ex, dy];
         end
         P = dedup_pts(P);
         set_param(lineH, 'Points', P);
         % verify orthogonality of what R14 actually stored
         Pr = get_param(lineH, 'Points');
         if ~all_orthogonal(Pr)
-            % R14 rewrote into diagonals: revert to straight-through fallback
-            % (its own canonical form) and report
-            msg = 'non-orthogonal after set; left to canonical form';
+            % v3.1: R14 replaced our tail with its canonical one -- learn
+            % the true (dst, elbow) from the appended points and fall
+            % through to the next strategy with calibrated values (Sum
+            % inports fed from above/below have dst = dp +- 10 on the
+            % approach COLUMN, which the bare-line probe cannot reveal).
+            if size(Pr, 1) >= 2
+                sx = Pr(1, 1);
+                sy = Pr(1, 2);
+                dx = Pr(end, 1);
+                dy = Pr(end, 2);
+                ex = Pr(end, 1);
+            end
+            chosen = [];
+        else
+            ok = true;
+            msg = '';
             return;
         end
-        ok = true;
-        msg = '';
-        return;
     end
 
     % anchor-vertical lane: for anchors past the dst (or with no room for a
@@ -519,11 +544,10 @@ try
             break;
         end
         if laneY ~= 0
-            if isTrunk
-                P = [sx sy; sx laneY; dx laneY; dx dy];
-            else
-                P = [sx sy; sx laneY; dx - 10, laneY; dx - 10, dy];
-            end
+            % v3.1: BOTH kinds of line end at the calibrated elbow -- R14
+            % force-normalizes the tail anyway and shears a mid-span final
+            % point into a diagonal (exp6 Gain1/Gain_m regressions).
+            P = [sx sy; sx laneY; ex, laneY; ex, dy];
             P = dedup_pts(P);
             set_param(lineH, 'Points', P);
             Pr = get_param(lineH, 'Points');
@@ -532,8 +556,14 @@ try
                 msg = '';
                 return;
             end
-            msg = 'anchor-lane route non-orthogonal after set';
-            return;
+            if size(Pr, 1) >= 2
+                sx = Pr(1, 1);
+                sy = Pr(1, 2);
+                dx = Pr(end, 1);
+                dy = Pr(end, 2);
+                ex = Pr(end, 1);
+            end
+            msg = 'anchor-lane sheared; falling through to go-around';
         end
     end
 
@@ -576,7 +606,6 @@ try
         laneDn = bot - max(12, spacing * 0.4);
         laneCands = [laneCands, laneUp, laneDn, laneUp + 25, laneDn - 25, ...
                      laneUp + 50, laneDn - 50, laneUp + 75, laneDn - 75];
-        ex = dx - 10;
         for lc = 1:numel(laneCands)
             cyTry = laneCands(lc);
             if isempty(cyTry), continue; end
@@ -608,6 +637,13 @@ try
                 ok = true;
                 msg = '';
                 return;
+            end
+            if size(Pr, 1) >= 2
+                sx = Pr(1, 1);
+                sy = Pr(1, 2);
+                dx = Pr(end, 1);
+                dy = Pr(end, 2);
+                ex = Pr(end, 1);
             end
         end
     end
