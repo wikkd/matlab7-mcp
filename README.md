@@ -265,6 +265,18 @@ junctions"):
    (Gain1/Gain_m/Constant_Ff) came exactly from this. Known cosmetic limit:
    the ~10px entry stub of a top/bottom-fed Sum port crosses that block's
    own name label — unavoidable, R14 draws the stub there anyway.
+8. **Line-line avoidance (v4)**, matching the official objective "avoid
+   overlap with ... other signal lines": every routed line's segments are
+   tracked in a wire map tagged with a family id (parent + its branch
+   segments share one family, so legal tee overlaps are exempt). Candidate
+   channels/lanes occupied by another family with overlapping span are
+   tried LAST (soft), and a nudge pass re-routes the movable side of any
+   remaining middle-segment superposition with the colliding coordinate
+   hard-banned (previous geometry restored on failure). Segments collinear
+   with the anchor, the approach rung and the canonical elbow column are
+   recognized as R14-forced and never chosen as nudge targets — pairs
+   of two forced segments are official-normal merged renders.
+   report.super_before/super_after/nudged quantify the pass.
 
 ### Verified results
 

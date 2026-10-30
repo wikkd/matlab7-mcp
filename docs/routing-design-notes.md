@@ -70,6 +70,13 @@ connector-routing literature:
    post-pass that detects two routed lines sharing a corridor segment and
    nudges one lane over (libavoid-style); or treat existing line segments as
    soft obstacles with a crossing penalty during the lane scan.
+   **DONE (2026-10-31, mcp_sim_route v4):** wire map with family ids, soft
+   last-priority lane/channel avoidance, nudge pass with hard-banned
+   colliding coordinates; R14-forced segments (anchor-collinear exit runs,
+   approach rungs, canonical elbow columns, port stubs) are exempt as nudge
+   targets. Verified on Comm_Link / EV_Drag_Power / Exp7_Rint_Battery:
+   super_before = super_after = 0 on all three (soft avoidance alone), 0
+   failed, 0 non-orthogonal, sim anchors identical.
 2. **A\* middle-section search**: keep the R14-compatible serializers
    (SAFE-Z / anchor-lane / go-around with the calibrated elbow tail — they
    exist because of the storage laws, see README "R14 line-semantics laws"),

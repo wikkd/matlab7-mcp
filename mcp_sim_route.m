@@ -1,42 +1,49 @@
 function report = mcp_sim_route(model, opts)
 %MCP_SIM_ROUTE  Re-route every line of one diagram layer as orthogonal
-% polylines: no diagonal segments, no crossing through block bodies, and
-% (v2) no running through block name labels. R14.
+% polylines: no diagonal segments, no crossing through block bodies or name
+% labels, and (v4) no two lines of different families running on top of
+% each other. R14.
 %   report = mcp_sim_route('model')                -> struct report
 %   report = mcp_sim_route('model','spacing',30)   -> custom channel spacing
 %
-% v2 routing-quality rules (2026-10-30):
-%   1. obstacles = inflated block bodies + visible name-label text rects
-%      (R14 default label position is below the block; NameLocation is
-%      honored where the block exposes it, masked blocks fall back to
-%      bottom). Text width estimated at 7 px/char + 10 px padding.
-%   2. a same-row line only stays straight when its run is actually clear;
-%      otherwise it detours (v1 kept it straight unconditionally).
-%   3. anchor-lane and go-around strategies now collision-check their
-%      VERTICAL legs too (v1 checked horizontal runs only).
-%   4. soft fallback: when no lane clears labels+bodies, retry with block
-%      bodies only -- v2 is never worse than the label-blind v1.
-%   5. rects/lines are collected at SearchDepth 1 only: subsystem-internal
-%      Positions live in a different coordinate system and must not pollute
-%      the root obstacle map (latent v1 bug, never triggered on flat
-%      models).
+% v4 line-line avoidance (2026-10-31), adopting the official Simulink
+% objective ("avoid overlap with blocks, annotations, and other signal
+% lines", see docs/routing-design-notes.md):
+%   1. WIRE MAP: every routed line's segments are tracked as thin rects
+%      tagged with a family id (= its src port handle). Parent + its branch
+%      segments share a family, so their legal tee overlaps are exempt.
+%   2. SOFT AVOIDANCE: candidate channels (x) and lanes (y) already occupied
+%      by another family with overlapping span are tried LAST -- soft, so
+%      the router can never over-constrain itself.
+%   3. NUDGE PASS: after convergence, middle segments (ordinal >= 2) of two
+%      different families sharing a corridor (same row/col, > 6 px overlap)
+%      are separated by re-routing the later line with the colliding
+%      coordinate HARD-banned; on failure the previous geometry is restored.
+%      Two sweeps max.
+%   report.super_before / super_after / nudged quantify the pass.
 %
-% R14 line semantics (proven by probes 2026-10-21, see README):
-%   - Points are ABSOLUTE coords; R14 forces Points(1,:) = the line's anchor
-%     (src port for trunk lines, trunk branch point for branch lines).
-%   - TRUNK lines: R14 replaces the final approach with its canonical elbow
-%     (dst_x-10, dst_y) unless our last middle IS that point.
-%   - Middles that sit alone on the exit horizontal/vertical run get dropped
-%     (collinear compression keeps the LAST point of each run).
-%   => SAFE-Z pattern (proven): give BOTH (c1-8,P0y) and (c1,P0y) so at least
-%      one survivor stays on the exit row, then (c1,Pny), then the trunk's
-%      canonical (dst_x-10,Pny) explicitly.
-%   - BRANCH lines accept arbitrary middles; same SAFE-Z works with the
-%      branch anchor read back after a dummy set.
-% Segments checked for collision: exit H, channel V, approach H, plus (v2)
-% the vertical legs of anchor-lane and go-around detours.
-% Branch lines ARE routed here; the anchor is honored so no branch-point
-% association is broken.
+% v3 routing-quality rules (2026-10-30/31, unchanged):
+%   1. obstacles = inflated block bodies + visible name-label text rects
+%   2. a same-row line only stays straight when its run is actually clear
+%   3. anchor-lane and go-around strategies collision-check vertical legs
+%   4. soft fallback: when no lane clears labels+bodies, retry with block
+%      bodies only -- never worse than the label-blind v1
+%   5. rects/lines collected at SearchDepth 1 only (subsystem coordinate
+%      systems must not pollute the root obstacle map)
+%   6. canonicalization probe: a bare [P0;dp] set reads back R14's own
+%      canonical tail to calibrate the true elbow/dst per port; if a set is
+%      still sheared the router learns (dst,elbow) from the appended points
+%      and retries the next strategy calibrated
+%   7. multi-dst ports get a junction stub (all branches fork at a clean T
+%      right after the source port); same-row branch segments shear into
+%      diagonals in R14, so the junction drops below the source label when
+%      one dst sits on the port row behind blockers
+%
+% R14 line semantics (probe-verified, see README "line-semantics laws"):
+% trunk SAFE-Z needs the (c-8,c) pair vs collinear compression, segments
+% must not use it; every middle list must end at the calibrated elbow;
+% Points(1,:) is forced to the line anchor; branch anchors follow the
+% parent polyline's last point.
 
 spacing = 30;
 margin = 4;
@@ -95,8 +102,6 @@ for k0 = 1:numel(allLines)
 end
 
 % ------------- collect block rects of THIS layer (inflated) ----------
-% SearchDepth 1 only: subsystem-internal Positions use a different
-% coordinate system and would corrupt the obstacle map.
 allPaths = find_system(model, 'SearchDepth', 1);
 rects = zeros(0, 4);
 for b = 1:numel(allPaths)
@@ -118,11 +123,7 @@ if ~isempty(R)
     R(:, 4) = R(:, 4) + margin;
 end
 
-% ---------------- name-label text rects (v2) ----------------
-% text width: real Java font metrics of the Simulink canvas font when
-% available, else a 6 px/char conservative fallback (measured 4.7..6.5
-% px/char on R14 models; the earlier 7 px/char guess over-blocked the
-% corridors between labels and forced through-text fallbacks).
+% ---------------- name-label text rects ----------------
 labelFontOK = false;
 jfm = [];
 try
@@ -145,7 +146,7 @@ for b = 1:numel(allPaths)
     hide = 'off';
     try hide = get_param(p, 'HideName'); catch, end
     if strcmp(hide, 'on'), continue; end
-    loc = 'bottom';   % R14 default; masked blocks do not expose NameLocation
+    loc = 'bottom';
     try loc = get_param(p, 'NameLocation'); catch, end
     cx = (r(1) + r(3)) / 2;
     cy = (r(2) + r(4)) / 2;
@@ -162,7 +163,7 @@ for b = 1:numel(allPaths)
             lr = [r(1) - tw - 1, cy - th/2, r(1) - 1, cy + th/2];
         case 'right'
             lr = [r(3) + 1, cy - th/2, r(3) + tw + 1, cy + th/2];
-        otherwise   % bottom
+        otherwise
             lr = [cx - tw/2, r(4) + 1, cx + tw/2, r(4) + th + 1];
     end
     labelR(end+1, :) = round(lr); %#ok<AGROW>
@@ -170,9 +171,6 @@ end
 Rfull = [R; labelR];
 
 % ---------------- enumerate every line (trunk + branch) ----------------
-% Each record: {dstLineHandle, dstPortHandle, isTrunk}
-% trunk  = every dst row of a src outport's own line
-% branch = any other line object arriving at a block inport
 recs = {};
 for b = 1:numel(allPaths)
     p = allPaths{b};
@@ -183,7 +181,6 @@ for b = 1:numel(allPaths)
     catch
         continue;
     end
-    % trunks: outport-side lines of every block
     for s = 1:numel(lh.Outport)
         h = lh.Outport(s);
         if h == -1 || h == 0, continue; end
@@ -197,7 +194,6 @@ for b = 1:numel(allPaths)
             recs{end+1} = {h, dsts(d), true}; %#ok<AGROW>
         end
     end
-    % branches: inport-side lines that are NOT one of the trunk handles
     for s = 1:numel(lh.Inport)
         h = lh.Inport(s);
         if h == -1 || h == 0, continue; end
@@ -219,12 +215,6 @@ for b = 1:numel(allPaths)
         end
     end
 end
-
-% ---------------- route trunks first, then branches ----------------
-nrouted = 0;
-nkept = 0;
-nfailed = 0;
-details = {};
 
 % ---------------- group trunk recs by parent line handle -------------
 uh = [];
@@ -249,18 +239,18 @@ njunc = 0;
 juncSrc = [];
 details = {};
 
-% pass 1: trunks. A single-dst line is routed straight to its dst. A
-% multi-dst line gets a JUNCTION STUB instead: the parent polyline ends at
-% J = [port_x+12, port_y], and R14 anchors every dst's segment object at
-% the parent's last point -- so all branches fork from a clean T right
-% after the source port. (v1 re-routed the parent polyline toward its LAST
-% dst, which dragged the junction to that dst's doorstep.)
+% v4 wire map: segments of every routed line
+wireA = zeros(0, 4);   % [x1 y1 x2 y2] normalized (H: y1==y2, V: x1==x2)
+wireFam = [];          % family id = src port handle of the owning line
+wireLine = [];         % owning line handle
+wireOrd = [];          % segment ordinal in the polyline (1 = exit rung)
+wireLast = [];         % 1 = approach segment (R14 canonical, unmovable)
+
+% pass 1: trunks
 for k = 1:numel(uh)
     h = uh(k);
     dsts = udsts{k};
     if numel(dsts) == 1
-        % pin the anchor to its src port stub -- a tee dragged by an earlier
-        % branch pass must not become the trunk's start point
         try
             spP = get_param(get_param(h, 'SrcPortHandle'), 'Position');
             spP = spP(1:2);
@@ -271,7 +261,8 @@ for k = 1:numel(uh)
             end
         catch
         end
-        [okS, msg] = route_one(h, dsts(1), Rfull, R, spacing, true);
+        [okS, msg] = route_one(h, dsts(1), Rfull, R, spacing, true, ...
+                               wireA, wireFam, [], []);
         if okS
             nrouted = nrouted + 1;
         elseif strcmp(msg, 'straight')
@@ -280,18 +271,14 @@ for k = 1:numel(uh)
             nfailed = nfailed + 1;
             details{end+1} = msg; %#ok<AGROW>
         end
+        [wireA, wireFam, wireLine, wireOrd, wireLast] = wire_add(wireA, ...
+            wireFam, wireLine, wireOrd, wireLast, h);
     else
         try
             spg = get_param(h, 'SrcPortHandle');
             spP = get_param(spg, 'Position');
             spP = spP(1:2);
             J = [spP(1) + 12, spP(2)];
-            % v3.1: a dst on the port row BEHIND blockers would make its
-            % segment same-row (sy==dy); R14 then forces the canonical
-            % straight-elbow form and shears any detour into a diagonal
-            % (probe E/F, 2026-10-30). When that case exists, drop the
-            % junction below the source's own name label instead -- then
-            % every segment of this port starts off-row and stays routable.
             needDrop = false;
             for d2 = 1:numel(dsts)
                 dp2 = get_param(dsts(d2), 'Position');
@@ -311,11 +298,11 @@ for k = 1:numel(uh)
                 else
                     tw2 = 6 * length(snm) + 10;
                 end
-                jy = spos(4) + 15 + 6;              % below the label band
+                jy = spos(4) + 15 + 6;
                 for d2 = 1:numel(dsts)
                     dp2 = get_param(dsts(d2), 'Position');
                     if abs(jy - dp2(2)) < 2
-                        jy = jy + 8;                % never land on a dst row
+                        jy = jy + 8;
                     end
                 end
                 J = [max(spP(1) + 12, ...
@@ -328,16 +315,14 @@ for k = 1:numel(uh)
             njunc = njunc + 1;
         catch
         end
+        [wireA, wireFam, wireLine, wireOrd, wireLast] = wire_add(wireA, ...
+            wireFam, wireLine, wireOrd, wireLast, h);
     end
 end
 % pass 2: branches (anchors depend on routed trunks)
 for r2 = 1:numel(recs)
     rec = recs{r2};
     if rec{3}, continue; end
-    % v2 junction hygiene for NON-junctioned parents only: a branch tee must
-    % sit ON the trunk exit row right after the src port. Segments of a
-    % junction-stub parent are anchored by the parent's own endpoint and
-    % must not be touched here.
     try
         spg2 = get_param(rec{1}, 'SrcPortHandle');
         if isempty(find(juncSrc == spg2, 1))
@@ -351,7 +336,8 @@ for r2 = 1:numel(recs)
         end
     catch
     end
-    [okS, msg] = route_one(rec{1}, rec{2}, Rfull, R, spacing, false);
+    [okS, msg] = route_one(rec{1}, rec{2}, Rfull, R, spacing, false, ...
+                           wireA, wireFam, [], []);
     if okS
         nrouted = nrouted + 1;
     elseif strcmp(msg, 'straight')
@@ -360,10 +346,11 @@ for r2 = 1:numel(recs)
         nfailed = nfailed + 1;
         details{end+1} = msg; %#ok<AGROW>
     end
+    [wireA, wireFam, wireLine, wireOrd, wireLast] = wire_add(wireA, ...
+        wireFam, wireLine, wireOrd, wireLast, rec{1});
 end
-% pass 3: convergence - routing branches can drag a trunk's anchor to a new
-% branch point (R14 moves Points(1,:) of every line sharing the src port).
-% Re-read anchors and re-route anything now non-orthogonal. Max 2 sweeps.
+% pass 3: convergence - re-read anchors and re-route anything now
+% non-orthogonal. Max 2 sweeps.
 for sweep = 1:2
     nfix = 0;
     for r2 = 1:numel(recs)
@@ -373,12 +360,82 @@ for sweep = 1:2
             continue;
         end
         nfix = nfix + 1;
-        route_one(rec{1}, rec{2}, Rfull, R, spacing, rec{3});
+        route_one(rec{1}, rec{2}, Rfull, R, spacing, rec{3}, ...
+                  wireA, wireFam, [], []);
+        [wireA, wireFam, wireLine, wireOrd, wireLast] = wire_add(wireA, ...
+            wireFam, wireLine, wireOrd, wireLast, rec{1});
     end
     if nfix == 0
         break;
     end
 end
+
+% ---------------- pass 4: wire separation (v4 nudge) ----------------
+% Middle segments (ordinal >= 2) of two different families sharing a
+% corridor are separated by re-routing the later line with the colliding
+% coordinate hard-banned. Two sweeps max; failures restore the previous
+% geometry, so the pass can only improve.
+nSuper0 = wire_count_super(wireA, wireFam, wireLine, wireOrd, wireLast);
+nNudged = 0;
+for sweep = 1:2
+    [ns, fixes] = wire_super_fixes(wireA, wireFam, wireLine, wireOrd, wireLast);
+    if ns == 0
+        break;
+    end
+    did = false;
+    handled = [];
+    for f = 1:numel(fixes)
+        fx = fixes{f};
+        h = fx{1};
+        if ~isempty(find(handled == h, 1)), continue; end
+        handled(end+1) = h; %#ok<AGROW>
+        recN = [];
+        for r2 = 1:numel(recs)
+            if recs{r2}{1} == h
+                recN = recs{r2};
+                break;
+            end
+        end
+        if isempty(recN), continue; end
+        Pold = [];
+        try Pold = get_param(h, 'Points'); catch, end
+        [wireA, wireFam, wireLine, wireOrd, wireLast] = wire_del(wireA, ...
+            wireFam, wireLine, wireOrd, wireLast, h);
+        if fx{2} == 1
+            [okS, msgN] = route_one(h, recN{2}, Rfull, R, spacing, ...
+                                    recN{3}, wireA, wireFam, fx{3}, []);
+        else
+            [okS, msgN] = route_one(h, recN{2}, Rfull, R, spacing, ...
+                                    recN{3}, wireA, wireFam, [], fx{3});
+        end
+        if okS || strcmp(msgN, 'straight')
+            nNudged = nNudged + 1;
+            did = true;
+        else
+            if ~isempty(Pold)
+                try set_param(h, 'Points', Pold); catch, end
+            end
+        end
+        [wireA, wireFam, wireLine, wireOrd, wireLast] = wire_add(wireA, ...
+            wireFam, wireLine, wireOrd, wireLast, h);
+    end
+    if ~did
+        break;
+    end
+    % anchors may have been dragged by the re-routes: re-converge
+    for r2 = 1:numel(recs)
+        rec = recs{r2};
+        Pcur = get_param(rec{1}, 'Points');
+        if isempty(Pcur) || all_orthogonal(Pcur)
+            continue;
+        end
+        route_one(rec{1}, rec{2}, Rfull, R, spacing, rec{3}, ...
+                  wireA, wireFam, [], []);
+        [wireA, wireFam, wireLine, wireOrd, wireLast] = wire_add(wireA, ...
+            wireFam, wireLine, wireOrd, wireLast, rec{1});
+    end
+end
+nSuper1 = wire_count_super(wireA, wireFam, wireLine, wireOrd, wireLast);
 
 try
     save_system(model);
@@ -387,15 +444,21 @@ end
 report = struct('model', model, 'routed', nrouted, 'kept', nkept, ...
     'failed', nfailed, 'ghost_lines', ndedup, ...
     'label_obstacles', size(labelR, 1), 'junctions', njunc, ...
+    'super_before', nSuper0, 'super_after', nSuper1, 'nudged', nNudged, ...
     'details', {details});
 end
 
 % ======================================================================
-function [ok, msg] = route_one(lineH, dstPort, Rfull, Rblk, spacing, isTrunk)
+function [ok, msg] = route_one(lineH, dstPort, Rfull, Rblk, spacing, ...
+                               isTrunk, wireA, wireFam, hardBanX, hardBanY)
 % Route one line, labels+bodies first, bodies-only as soft fallback.
-[ok, msg] = route_attempt(lineH, dstPort, Rfull, spacing, isTrunk);
+if nargin < 9, hardBanX = []; end
+if nargin < 10, hardBanY = []; end
+[ok, msg] = route_attempt(lineH, dstPort, Rfull, spacing, isTrunk, ...
+                          wireA, wireFam, hardBanX, hardBanY);
 if ~ok && ~strcmp(msg, 'straight')
-    [ok2, msg2] = route_attempt(lineH, dstPort, Rblk, spacing, isTrunk);
+    [ok2, msg2] = route_attempt(lineH, dstPort, Rblk, spacing, isTrunk, ...
+                                wireA, wireFam, hardBanX, hardBanY);
     if ok2
         ok = true;
         msg = '';
@@ -406,15 +469,14 @@ end
 end
 
 % ======================================================================
-function [ok, msg] = route_attempt(lineH, dstPort, R, spacing, isTrunk)
+function [ok, msg] = route_attempt(lineH, dstPort, R, spacing, isTrunk, ...
+                                   wireA, wireFam, hardBanX, hardBanY)
 % Route one line as SAFE-Z against obstacle rect list R. ok=true if Points
 % were (re)set; msg='straight' if already a clean straight line; otherwise
 % msg carries the error.
 ok = false;
 msg = '';
 try
-    % anchor: R14 forces Points(1,:) -- read it AFTER a probe set so the
-    % anchor reflects any branch-point snapping. Use the CURRENT first point.
     Pcur = get_param(lineH, 'Points');
     if isempty(Pcur)
         msg = 'line has no Points (unconnected?)';
@@ -425,12 +487,7 @@ try
     dp = dp(1:2);
 
     % v3.1 canonicalization probe: write a bare [P0; dp] and read back the
-    % tail R14 appends. Port stub semantics vary by block type (README law
-    % 4): for some ports get_param Position IS the dst point, for others it
-    % is already the elbow (true dst = Position + (10,0)). Routing with the
-    % wrong assumption puts our elbow point 10 px off R14's, which deletes
-    % it and shears the final approach into a diagonal (exp6
-    % Gain1/Gain_m/Constant_Ff, deterministic across runs).
+    % tail R14 appends -- calibrates the true elbow/dst for this port.
     set_param(lineH, 'Points', [P0; dp]);
     Pp = get_param(lineH, 'Points');
     sx = Pp(1, 1);
@@ -438,7 +495,7 @@ try
     dx = Pp(end, 1);
     dy = Pp(end, 2);
     if size(Pp, 1) >= 3
-        ex = Pp(end - 1, 1);   % R14's own elbow x for this port
+        ex = Pp(end - 1, 1);
     else
         ex = dx - 10;
     end
@@ -451,10 +508,32 @@ try
         return;
     end
 
+    % v4: soft lane/channel bans from already-routed lines of other
+    % families. A V channel at an x another family's V segment occupies with
+    % overlapping y-span would run on top of it; same for H lanes. Soft =
+    % tried last, so this can never over-constrain. Hard bans (nudge pass)
+    % are skipped entirely.
+    softX = [];
+    softY = [];
+    myFam = 0;
+    try myFam = get_param(lineH, 'SrcPortHandle'); catch, end
+    for w = 1:size(wireA, 1)
+        if wireFam(w) == myFam, continue; end
+        sw = wireA(w, :);
+        if sw(1) == sw(3)
+            if sw(2) < max(sy, dy) - 4 && sw(4) > min(sy, dy) + 4
+                softX(end+1) = sw(1); %#ok<AGROW>
+            end
+        else
+            if sw(1) < max(sx, dx) - 4 && sw(3) > min(sx, dx) + 4
+                softY(end+1) = sw(2); %#ok<AGROW>
+            end
+        end
+    end
+    softY = setdiff(softY, [sy, dy]);
+
     % candidate channels: open interval between anchor x and dst x, ordered
-    % by distance from the anchor exit (near-src channels keep branch points
-    % early). If the anchor lies past the dst the interval is empty and the
-    % anchor-lane / go-around strategies take over.
+    % by distance from the anchor exit.
     lo = min(sx, dx) + 12;
     hi = max(sx, dx) - 12;
     cands = [];
@@ -472,10 +551,10 @@ try
         end
         cands = cands(ord);
     end
+    cands = cands_keep(cands, softX, hardBanX);
 
     % SAFE-Z: exit horizontal at y=sy to channel c, vertical to y=dy,
-    % approach horizontal to dst. For trunks the canonical elbow
-    % (dst_x-10, dst_y) is part of the pattern.
+    % approach horizontal to dst.
     chosen = [];
     for c = 1:numel(cands)
         cx = cands(c);
@@ -490,26 +569,14 @@ try
     if ~isempty(chosen)
         cx = chosen;
         if isTrunk
-            % [P0; (c-8,P0y); (c,P0y); (c,Pny); (elbow,Pny)]
-            % pair (c-8,c) survives R14 collinear compression on trunks
             P = [sx sy; cx - 8, sy; cx, sy; cx, dy; ex, dy];
         else
-            % v3 segment pattern (probe-proven 2026-10-30): NO pair on the
-            % exit row (a pair makes R14 drop the channel) and the middle
-            % list MUST end at the canonical elbow -- R14 then appends dst
-            % and stores the polyline verbatim.
             P = [sx sy; cx, sy; cx, dy; ex, dy];
         end
         P = dedup_pts(P);
         set_param(lineH, 'Points', P);
-        % verify orthogonality of what R14 actually stored
         Pr = get_param(lineH, 'Points');
         if ~all_orthogonal(Pr)
-            % v3.1: R14 replaced our tail with its canonical one -- learn
-            % the true (dst, elbow) from the appended points and fall
-            % through to the next strategy with calibrated values (Sum
-            % inports fed from above/below have dst = dp +- 10 on the
-            % approach COLUMN, which the bare-line probe cannot reveal).
             if size(Pr, 1) >= 2
                 sx = Pr(1, 1);
                 sy = Pr(1, 2);
@@ -525,28 +592,28 @@ try
         end
     end
 
-    % anchor-vertical lane: for anchors past the dst (or with no room for a
-    % channel), drop straight down/up at the anchor x, run horizontally on a
-    % clear lane, then enter the dst. Vertical-exit middles can be dropped by
-    % R14's collinear compression, so verify after set and report honestly.
+    % anchor-vertical lane: drop at the anchor x, run horizontally on a
+    % clear lane, then enter the dst.
     if isempty(chosen)
-        laneY = 0;
+        laneList = [];
         for s2 = 1:10
             cy2 = dy - s2 * 10 * sign(dy - sy);
             if cy2 == sy, continue; end
+            laneList(end+1) = cy2; %#ok<AGROW>
+        end
+        laneList = cands_keep(laneList, softY, hardBanY);
+        laneY = 0;
+        for t5 = 1:numel(laneList)
+            cy2 = laneList(t5);
             if seg_blocked_h(min(sx, dx), max(sx, dx), cy2, R)
                 continue;
             end
-            % v2: both vertical legs must be clear as well
             if seg_blocked_v(sy, cy2, sx, R), continue; end
             if seg_blocked_v(cy2, dy, dx, R), continue; end
             laneY = cy2;
             break;
         end
         if laneY ~= 0
-            % v3.1: BOTH kinds of line end at the calibrated elbow -- R14
-            % force-normalizes the tail anyway and shears a mid-span final
-            % point into a diagonal (exp6 Gain1/Gain_m regressions).
             P = [sx sy; sx laneY; ex, laneY; ex, dy];
             P = dedup_pts(P);
             set_param(lineH, 'Points', P);
@@ -567,10 +634,7 @@ try
         end
     end
 
-    % go-around lane above/below blockers in the span. The vertical leg must
-    % sit on a channel x (NOT the anchor x -- R14 drops same-x middles), so
-    % find a clear vertical lane near the anchor and use the SAFE-Z pair
-    % [(c-8,sy);(c,sy)] to survive collinear compression.
+    % go-around lane above/below blockers in the span.
     lo2 = min(sx, dx);
     hi2 = max(sx, dx);
     top = -inf;
@@ -583,13 +647,6 @@ try
         if R(k, 4) > top, top = R(k, 4); end
     end
     if anyBlk
-        % v3: SCAN lane rows across the span (step 8) instead of only the
-        % blocker extremes -- the old laneUp/laneDn were computed from the
-        % top/bottom of EVERY obstacle overlapping the x-span, so a long
-        % same-row haul produced absurd candidates (e.g. y=+400 from a
-        % label four rows below) while missing the clean corridors between
-        % rows. Scan +-4*spacing around the signal rows; keep the old
-        % extreme lanes only as last resorts.
         yLo = min(sy, dy) - 4 * spacing;
         yHi = max(sy, dy) + 4 * spacing;
         laneCands = [];
@@ -598,7 +655,6 @@ try
             laneCands(end+1) = round(yy2); %#ok<AGROW>
             yy2 = yy2 - 8;
         end
-        % nearest-the-signal-row first: small detours before big ones
         mid2 = (sy + dy) / 2;
         [tmp2, ord2] = sort(abs(laneCands - mid2));
         laneCands = laneCands(ord2); %#ok<NASGU>
@@ -606,24 +662,26 @@ try
         laneDn = bot - max(12, spacing * 0.4);
         laneCands = [laneCands, laneUp, laneDn, laneUp + 25, laneDn - 25, ...
                      laneUp + 50, laneDn - 50, laneUp + 75, laneDn - 75];
+        laneCands = cands_keep(laneCands, softY, hardBanY);
         for lc = 1:numel(laneCands)
             cyTry = laneCands(lc);
             if isempty(cyTry), continue; end
             if seg_blocked_h(sx, dx, cyTry, R), continue; end
             cxg = 0;
+            cxgFB = 0;
             for s4 = 0:10
                 c4 = sx + s4 * 8;
-                if ~seg_blocked_v(sy, cyTry, c4, R)
+                if seg_blocked_v(sy, cyTry, c4, R), continue; end
+                if ~isempty(find(abs(hardBanX - c4) < 4, 1)), continue; end
+                if isempty(find(abs(softX - c4) < 4, 1))
                     cxg = c4;
                     break;
                 end
+                if cxgFB == 0, cxgFB = c4; end
             end
+            if cxg == 0, cxg = cxgFB; end
             if cxg == 0, continue; end
             if seg_blocked_v(cyTry, dy, ex, R), continue; end
-            % Lane pattern (proven): vertical at channel x, lane row, then
-            % the canonical elbow (dx-10) and vertical to the dst row.
-            % Trunks keep the (c-8,c) pairs vs collinear compression;
-            % segments (v3) drop them and end at the elbow like B/C/D.
             if isTrunk
                 P = [sx sy; cxg - 8, sy; cxg, sy; cxg, cyTry; ...
                      ex - 8, cyTry; ex, cyTry; ex, dy];
@@ -651,6 +709,153 @@ try
     msg = 'no clear channel found; left unchanged';
 catch
     msg = ['route_attempt failed: ', lasterr];
+end
+end
+
+% ------------------------------------------------------------------
+function out = cands_keep(cands, softVals, hardVals)
+% v4 candidate ordering: drop hard-banned entirely; move soft-occupied to
+% the back (preserving the original preference order otherwise).
+out = [];
+lastC = [];
+for k = 1:numel(cands)
+    cv = cands(k);
+    if ~isempty(hardVals) && ~isempty(find(abs(hardVals - cv) < 4, 1))
+        continue;
+    end
+    if ~isempty(softVals) && ~isempty(find(abs(softVals - cv) < 4, 1))
+        lastC(end+1) = cv; %#ok<AGROW>
+    else
+        out(end+1) = cv; %#ok<AGROW>
+    end
+end
+out = [out, lastC];
+end
+
+% ------------------------------------------------------------------
+function [A, F, L, O, W] = wire_add(A, F, L, O, W, lineH)
+% (Re-)register one line's segments into the wire map. W marks the approach
+% segment (last ordinal) -- R14 canonicalizes it, so it is unmovable.
+[A, F, L, O, W] = wire_del(A, F, L, O, W, lineH);
+try
+    P = get_param(lineH, 'Points');
+    fam = get_param(lineH, 'SrcPortHandle');
+catch
+    return;
+end
+if isempty(P) || size(P, 1) < 2, return; end
+ax = P(1, 1);
+ay = P(1, 2);
+for k = 2:size(P, 1)
+    x1 = P(k-1, 1); y1 = P(k-1, 2);
+    x2 = P(k, 1);   y2 = P(k, 2);
+    if abs(y1 - y2) < 0.5
+        s = [min(x1, x2), y1, max(x1, x2), y1];
+    else
+        s = [x1, min(y1, y2), x1, max(y1, y2)];
+    end
+    A(end+1, :) = s; %#ok<AGROW>
+    F(end+1) = fam;  %#ok<AGROW>
+    L(end+1) = lineH; %#ok<AGROW>
+    O(end+1) = k - 1; %#ok<AGROW>
+    forced = 0;
+    if k >= size(P, 1) - 1
+        forced = 1;   % last two segments: approach rung + canonical elbow
+    end               % column/stub are R14-forced, unmovable
+    if ~forced
+        % exit run: collinear with the anchor point -- its row/column is
+        % the port's, also unmovable (includes the (c-8,c) pair rows)
+        if (abs(y1 - y2) < 0.5 && abs(y1 - ay) < 0.5) || ...
+                (abs(x1 - x2) < 0.5 && abs(x1 - ax) < 0.5)
+            forced = 1;
+        end
+    end
+    W(end+1) = forced;
+end
+end
+
+% ------------------------------------------------------------------
+function [A, F, L, O, W] = wire_del(A, F, L, O, W, lineH)
+kill = find(L == lineH);
+A(kill, :) = [];
+F(kill) = [];
+L(kill) = [];
+O(kill) = [];
+W(kill) = [];
+end
+
+% ------------------------------------------------------------------
+function [ns, fixes] = wire_super_fixes(A, F, L, O, W)
+% Superposing segments of two different families (both ordinal >= 2). The
+% nudge target is always a MOVABLE side: if one segment is the approach rung
+% (last ordinal, R14-canonical), the other one moves; when both are forced
+% the pair is skipped (official Simulink renders those merged too). The fix
+% bans the SHARED corridor coordinate for the movable line.
+ns = 0;
+fixes = {};
+n = size(A, 1);
+for i = 1:n
+    if O(i) <= 1, continue; end
+    for j = i+1:n
+        if O(j) <= 1, continue; end
+        if F(i) == F(j), continue; end
+        si = A(i, :);
+        sj = A(j, :);
+        if si(1) == si(3) && sj(1) == sj(3) && abs(si(1) - sj(1)) < 2
+            ov = min(si(4), sj(4)) - max(si(2), sj(2));
+            if ov > 6
+                if W(i) && W(j)
+                    continue;   % both canonical approach columns
+                end
+                ns = ns + 1;
+                if W(j)
+                    fixes{end+1} = {L(i), 1, sj(1)}; %#ok<AGROW>
+                else
+                    fixes{end+1} = {L(j), 1, si(1)}; %#ok<AGROW>
+                end
+            end
+        elseif si(1) ~= si(3) && sj(1) ~= sj(3) && abs(si(2) - sj(2)) < 2
+            ov = min(si(3), sj(3)) - max(si(1), sj(1));
+            if ov > 6
+                if W(i) && W(j)
+                    continue;
+                end
+                ns = ns + 1;
+                if W(j)
+                    fixes{end+1} = {L(i), 2, sj(2)}; %#ok<AGROW>
+                else
+                    fixes{end+1} = {L(j), 2, si(2)}; %#ok<AGROW>
+                end
+            end
+        end
+    end
+end
+end
+
+% ------------------------------------------------------------------
+function ns = wire_count_super(A, F, L, O, W)
+ns = 0;
+n = size(A, 1);
+for i = 1:n
+    if O(i) <= 1, continue; end
+    for j = i+1:n
+        if O(j) <= 1, continue; end
+        if F(i) == F(j), continue; end
+        if W(i) && W(j)
+            continue;   % both canonical approach segments: official-normal
+        end
+        si = A(i, :);
+        sj = A(j, :);
+        if si(1) == si(3) && sj(1) == sj(3) && abs(si(1) - sj(1)) < 2
+            if min(si(4), sj(4)) - max(si(2), sj(2)) > 6
+                ns = ns + 1;
+            end
+        elseif si(1) ~= si(3) && sj(1) ~= sj(3) && abs(si(2) - sj(2)) < 2
+            if min(si(3), sj(3)) - max(si(1), sj(1)) > 6
+                ns = ns + 1;
+            end
+        end
+    end
 end
 end
 
