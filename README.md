@@ -292,6 +292,31 @@ junctions"):
    cross-family colinear overlaps 13 → **0**, diagonals 3 → 0, sim anchors
    (E/SOC/mileage) bit-identical; Comm_Link / exp6 / exp7 copies all 0
    failed, super 0→0, cross-family 0.
+10. **A\* mid-section search (v5)** — the pattern strategies are demoted to
+    a verified fallback; path CHOOSING is now an optimal search. Per net,
+    a Hanan-style sparse lattice is built from block/label edges ±12, port
+    coordinates, exit stubs and entry lanes; a direction-state A\* minimizes
+    `length + 60·bends + 20·crossings + 8·congestion(px equivalents)`, where
+    crossing = perpendicular pass over another family's segment, congestion
+    = within 10 px of one. Hard layers: inflated rects (blocks+labels) and
+    other-family same-direction segments. The emitter reuses the v3/v4
+    serialization rules verbatim (probe-learned canonical elbow tail, stubs,
+    dedup, readback); any failure (shear / obstacle / overlap / 30 k pop
+    budget) falls back to the pattern strategies, and every failure path now
+    RESTORES the pre-attempt geometry (fixes the "left unchanged" mutation
+    leak and makes re-routing idempotent — v4.1 drifted on its own output,
+    v5 is bit-stable). Same-row blocked pairs and vertical-entry ports stay
+    delegated to the pattern logic. `opts.method='pattern'` restores pure
+    v4.1; `opts.bend/cross/congest` retune the cost. Independent grader:
+    `mcp_sim_metrics(model)` (worker-side, call via matlab_eval) — diag,
+    out-of-bbox, cross-family overlaps, crossings, block/label hits, total
+    length/bends, worst detours, sharing no state with the router.
+    A/B on four models (v4.1 → v5, all zero-defect metrics kept):
+    Comm_Link bends 21→**11**; EV_Drag_Power length 2439→**2127**, bends
+    24→**18**; Exp7 length 9528→**9432**, bends 64→**56**; EV_Energy_Range
+    length 10978→**10512**, bends 62→**56**, worst detour 2.7→**1.3**,
+    baseline's 4 residual defects → 0. Runtime ≤ 10 s/model; sim anchors
+    bit-identical.
 
 ### Verified results
 

@@ -92,7 +92,19 @@ connector-routing literature:
    audit: 13 → 0 cross-family overlaps, 3 → 0 diagonals, sim anchors
    (E/SOC/mileage) bit-identical; Comm_Link / exp6 / exp7 regression all 0
    failed, cross-family 0.
-2. **A\* middle-section search**: keep the R14-compatible serializers
+2. **A\* middle-section search** — **DONE (2026-10-31, mcp_sim_route v5,
+   design in `astar-router-design.md`)**: per-net Hanan lattice from
+   block/label edges, ports, stubs and entry lanes; direction-state A\*
+   with cost = length + 60/bend + 20/crossing + 8/congestion; emitter
+   reuses the probe-verified serializers verbatim; patterns demoted to
+   verified fallback; failed attempts restore prior geometry (idempotent
+   re-routing). A/B on four models: bends -48 % (Comm_Link), length -13 %
+   / bends -25 % (EV_Drag_Power), worst detour 2.7 -> 1.3 with 4 residual
+   defects -> 0 (EV_Energy_Range); sim anchors bit-identical; <= 10 s/model.
+   Implementation lessons: repmat orientation for the two cost matrices,
+   R14 rejects vector operands to && (scalarize), the emit audit must skip
+   the R14-mandated port stubs (they cross the margin zone by design),
+   and the lattice boundary eps must match seg_blocked_*. Original sketch: keep the R14-compatible serializers
    (SAFE-Z / anchor-lane / go-around with the calibrated elbow tail — they
    exist because of the storage laws, see README "R14 line-semantics laws"),
    but let a small A\* over an obstacle-corner grid choose the mid-section

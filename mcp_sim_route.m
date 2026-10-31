@@ -51,6 +51,14 @@ if nargin < 2, opts = struct(); end
 if isfield(opts, 'spacing'), spacing = opts.spacing; end
 if isfield(opts, 'margin'), margin = opts.margin; end
 
+% v5 A* options threaded to route_one -> route_astar
+aopts = struct('method', 'astar', 'bend', 60, 'cross', 20, ...
+               'congest', 8, 'budget', 30000, 'span', 2 * spacing);
+if isfield(opts, 'method'), aopts.method = opts.method; end
+if isfield(opts, 'bend'), aopts.bend = opts.bend; end
+if isfield(opts, 'cross'), aopts.cross = opts.cross; end
+if isfield(opts, 'congest'), aopts.congest = opts.congest; end
+
 % full-path models fail on this R14 ("no system named"): cd + bare name
 if any(model == '/') || any(model == '\')
     [mp, mn] = fileparts(model);
@@ -231,6 +239,31 @@ for r2 = 1:numel(recs)
     end
 end
 
+% v5: most-constrained-first ordering -- multi-dst nets, then longest span
+if ~isempty(uh)
+    keyU = zeros(size(uh));
+    for k2 = 1:numel(uh)
+        spk = [];
+        try
+            spk = get_param(get_param(uh(k2), 'SrcPortHandle'), 'Position');
+        catch
+        end
+        spank = 0;
+        if ~isempty(spk)
+            for d3 = 1:numel(udsts{k2})
+                dpk = get_param(udsts{k2}(d3), 'Position');
+                dpk = dpk(1:2);
+                spank = max(spank, abs(dpk(1) - spk(1)) + ...
+                                abs(dpk(2) - spk(2)));
+            end
+        end
+        keyU(k2) = 100000 * numel(udsts{k2}) + spank;
+    end
+    [tmpK, ordK] = sort(keyU, 'descend'); %#ok<NASGU>
+    uh = uh(ordK);
+    udsts = udsts(ordK);
+end
+
 % ---------------- route trunks first, then branches ----------------
 nrouted = 0;
 nkept = 0;
@@ -262,7 +295,7 @@ for k = 1:numel(uh)
         catch
         end
         [okS, msg] = route_one(h, dsts(1), Rfull, R, spacing, true, ...
-                               wireA, wireFam, [], []);
+                               wireA, wireFam, [], [], aopts);
         if okS
             nrouted = nrouted + 1;
         elseif strcmp(msg, 'straight')
@@ -337,7 +370,7 @@ for r2 = 1:numel(recs)
     catch
     end
     [okS, msg] = route_one(rec{1}, rec{2}, Rfull, R, spacing, false, ...
-                           wireA, wireFam, [], []);
+                           wireA, wireFam, [], [], aopts);
     if okS
         nrouted = nrouted + 1;
     elseif strcmp(msg, 'straight')
@@ -361,7 +394,7 @@ for sweep = 1:2
         end
         nfix = nfix + 1;
         route_one(rec{1}, rec{2}, Rfull, R, spacing, rec{3}, ...
-                  wireA, wireFam, [], []);
+                  wireA, wireFam, [], [], aopts);
         [wireA, wireFam, wireLine, wireOrd, wireLast] = wire_add(wireA, ...
             wireFam, wireLine, wireOrd, wireLast, rec{1});
     end
@@ -403,10 +436,10 @@ for sweep = 1:2
             wireFam, wireLine, wireOrd, wireLast, h);
         if fx{2} == 1
             [okS, msgN] = route_one(h, recN{2}, Rfull, R, spacing, ...
-                                    recN{3}, wireA, wireFam, fx{3}, []);
+                                    recN{3}, wireA, wireFam, fx{3}, [], aopts);
         else
             [okS, msgN] = route_one(h, recN{2}, Rfull, R, spacing, ...
-                                    recN{3}, wireA, wireFam, [], fx{3});
+                                    recN{3}, wireA, wireFam, [], fx{3}, aopts);
         end
         if okS || strcmp(msgN, 'straight')
             nNudged = nNudged + 1;
@@ -430,7 +463,7 @@ for sweep = 1:2
             continue;
         end
         route_one(rec{1}, rec{2}, Rfull, R, spacing, rec{3}, ...
-                  wireA, wireFam, [], []);
+                  wireA, wireFam, [], [], aopts);
         [wireA, wireFam, wireLine, wireOrd, wireLast] = wire_add(wireA, ...
             wireFam, wireLine, wireOrd, wireLast, rec{1});
     end
@@ -450,15 +483,24 @@ end
 
 % ======================================================================
 function [ok, msg] = route_one(lineH, dstPort, Rfull, Rblk, spacing, ...
-                               isTrunk, wireA, wireFam, hardBanX, hardBanY)
-% Route one line, labels+bodies first, bodies-only as soft fallback.
+                               isTrunk, wireA, wireFam, hardBanX, hardBanY, ...
+                               aopts)
+% Route one line: v5 A* first, then patterns, labels+bodies fallback.
+% Every failure path restores the pre-attempt geometry (minimum disturbance:
+% a failed route must never leave a mutated shape behind).
 if nargin < 9, hardBanX = []; end
 if nargin < 10, hardBanY = []; end
+if nargin < 11
+    aopts = struct('method', 'pattern', 'bend', 60, 'cross', 20, ...
+                   'congest', 8, 'budget', 30000, 'span', 180);
+end
+Psave = [];
+try Psave = get_param(lineH, 'Points'); catch, end
 [ok, msg] = route_attempt(lineH, dstPort, Rfull, spacing, isTrunk, ...
-                          wireA, wireFam, hardBanX, hardBanY);
+                          wireA, wireFam, hardBanX, hardBanY, aopts);
 if ~ok && ~strcmp(msg, 'straight')
     [ok2, msg2] = route_attempt(lineH, dstPort, Rblk, spacing, isTrunk, ...
-                                wireA, wireFam, hardBanX, hardBanY);
+                                wireA, wireFam, hardBanX, hardBanY, aopts);
     if ok2
         ok = true;
         msg = '';
@@ -466,14 +508,21 @@ if ~ok && ~strcmp(msg, 'straight')
         msg = msg2;
     end
 end
+if ~ok && ~strcmp(msg, 'straight') && ~isempty(Psave)
+    try set_param(lineH, 'Points', Psave); catch, end
+end
 end
 
 % ======================================================================
 function [ok, msg] = route_attempt(lineH, dstPort, R, spacing, isTrunk, ...
-                                   wireA, wireFam, hardBanX, hardBanY)
+                                   wireA, wireFam, hardBanX, hardBanY, aopts)
 % Route one line as SAFE-Z against obstacle rect list R. ok=true if Points
 % were (re)set; msg='straight' if already a clean straight line; otherwise
 % msg carries the error.
+if nargin < 10
+    aopts = struct('method', 'pattern', 'bend', 60, 'cross', 20, ...
+                   'congest', 8, 'budget', 30000, 'span', 180);
+end
 ok = false;
 msg = '';
 try
@@ -507,6 +556,23 @@ try
         msg = 'straight';
         return;
     end
+
+    % v5: A* mid-section search on a per-net Hanan-style lattice before the
+    % hand-written pattern strategies. Patterns remain the verified
+    % fallback; failure here costs nothing.
+    [okA, msgA] = route_astar(lineH, dstPort, R, wireA, wireFam, ...
+                              sx, sy, dx, dy, ex, P0, aopts, ...
+                              hardBanX, hardBanY);
+    global ASTARSTAT ASTARMSGS
+    if ~isempty(ASTARSTAT)
+        ASTARMSGS{end+1} = msgA; %#ok<AGROW>
+    end
+    if okA
+        ok = true;
+        msg = '';
+        return;
+    end
+    msg = msgA;
 
     % v4: soft lane/channel bans from already-routed lines of other
     % families. A V channel at an x another family's V segment occupies with
@@ -1003,4 +1069,459 @@ for k = 1:size(R, 1)
         return;
     end
 end
+end
+
+% ======================================================================
+% v5 A* mid-section router (see docs/astar-router-design.md)
+% ======================================================================
+function [ok, msg] = route_astar(lineH, dstPort, R, wireA, wireFam, ...
+                                 sx, sy, dx, dy, ex, P0, aopts, ...
+                                 hardBanX, hardBanY)
+% Direction-state A* on a per-net Hanan-style sparse lattice. Chooses the
+% path under cost = length + bends + crossings + congestion, emits through
+% the R14 serialization rules (probe-learned canonical elbow tail), and
+% verifies by readback + wire audit. Any failure returns ok=false and the
+% caller falls back to the pattern strategies.
+ok = false;
+msg = '';
+try
+    global ASTARSTAT ASTARMSGS
+    if ~isempty(ASTARSTAT), ASTARSTAT(1) = ASTARSTAT(1) + 1; end
+    if ~isfield(aopts, 'method') || ~strcmpi(aopts.method, 'astar')
+        msg = 'astar: disabled';
+        return;
+    end
+    myFam = 0;
+    try myFam = get_param(lineH, 'SrcPortHandle'); catch, end
+    if abs(sy - dy) < 0.5
+        msg = 'astar: same-row delegated to patterns';
+        return;
+    end
+    vertEntry = (abs(ex - dx) < 0.5);   % no canonical elbow discovered
+    ASTARPHASE = 'init';
+
+    % ---------------- lattice line collection ----------------
+    span = aopts.span;
+    xlo = min([sx, dx, ex]) - span;
+    xhi = max([sx, dx, ex]) + span;
+    ylo = min([sy, dy]) - span;
+    yhi = max([sy, dy]) + span;
+    xs = [sx, sx + 8, dx];
+    ys = [sy, dy];
+    if vertEntry
+        ys = [ys, dy - 10, dy - 20, dy + 10, dy + 20];
+    else
+        sgn = sign(ex - dx);
+        if sgn == 0, sgn = -1; end
+        for k = 1:6
+            xs(end+1) = ex + sgn * 10 * k; %#ok<AGROW>
+        end
+    end
+    for r = 1:size(R, 1)
+        if R(r,3) < xlo || R(r,1) > xhi || R(r,4) < ylo || R(r,2) > yhi
+            continue;
+        end
+        xs(end+1) = R(r,1) - 12; %#ok<AGROW>
+        xs(end+1) = R(r,3) + 12; %#ok<AGROW>
+        ys(end+1) = R(r,2) - 12; %#ok<AGROW>
+        ys(end+1) = R(r,4) + 12; %#ok<AGROW>
+    end
+    xs = astar_merge(xs, xlo, xhi);
+    ys = astar_merge(ys, ylo, yhi);
+    xs = astar_force(xs, [sx, sx + 8, dx, ex]);
+    ys = astar_force(ys, [sy, dy]);
+    nx = numel(xs);
+    ny = numel(ys);
+    if nx * ny > 25000
+        msg = 'astar: lattice too large';
+        return;
+    end
+
+    ASTARPHASE = 'rects';
+    % ---------------- edge cost layers ----------------
+    % Hc(j,k): cost of the horizontal edge [xs(k),xs(k+1)] at row ys(j)
+    % Vc(j,i): cost of the vertical edge [ys(j),ys(j+1)] at column xs(i)
+    % Inf = impassable. Edges exactly on an inflated-rect boundary are
+    % allowed (0.6 eps), matching the seg_blocked_* margin semantics.
+    Hc = repmat(diff(xs), ny, 1);
+    Vc = repmat(diff(ys)', 1, nx);
+    lamX = aopts.cross;
+    lamC = aopts.congest;
+    for r = 1:size(R, 1)
+        r1 = R(r,1); r2 = R(r,2); r3 = R(r,3); r4 = R(r,4);
+        if r3 < xs(1) || r1 > xs(nx) || r4 < ys(1) || r2 > ys(ny)
+            continue;
+        end
+        j1 = find(ys > r2 - 0.6, 1);
+        j2 = find(ys < r4 + 0.6, 1, 'last');
+        k1 = find(xs(1:end-1) < r3, 1, 'last');
+        k2 = find(xs(2:end) > r1, 1);
+        if ~(isempty(j1) || isempty(j2) || isempty(k1) || isempty(k2)) ...
+                && j1 <= j2 && k2 <= k1
+            for j = j1:j2
+                for k = k2:k1
+                    if xs(k+1) > r1 - 0.5 && xs(k) < r3 + 0.5
+                        Hc(j, k) = Inf;
+                    end
+                end
+            end
+        end
+        i1 = find(xs > r1 - 0.6, 1);
+        i2 = find(xs < r3 + 0.6, 1, 'last');
+        l1 = find(ys(1:end-1) < r4, 1, 'last');
+        l2 = find(ys(2:end) > r2, 1);
+        if ~(isempty(i1) || isempty(i2) || isempty(l1) || isempty(l2)) ...
+                && i1 <= i2 && l2 <= l1
+            for i = i1:i2
+                for j = l2:l1
+                    if ys(j+1) > r2 - 0.5 && ys(j) < r4 + 0.5
+                        Vc(j, i) = Inf;
+                    end
+                end
+            end
+        end
+    end
+
+    ASTARPHASE = 'wireV';
+    % wire layers: other families only. Aligned same-direction = hard
+    % (overlap is the defect); perpendicular = crossing price; anything
+    % within 10 px = congestion price (lane spreading, emergent entry lanes)
+    for s = 1:size(wireA, 1)
+        if wireFam(s) == myFam, continue; end
+        sw = wireA(s, :);
+        if abs(sw(1) - sw(3)) < 0.5
+            xv = sw(1);
+            ya = min(sw(2), sw(4));
+            yb = max(sw(2), sw(4));
+            i = find(abs(xs - xv) < 0.5, 1);
+            if ~isempty(i)
+                [ja, jb] = astar_ivl(ys, ya, yb);
+                if ja > 0
+                    Vc(ja:jb, i) = Inf;
+                end
+            end
+            jr = find(ys >= ya - 0.5 & ys <= yb + 0.5);
+            if ~isempty(jr)
+                k = astar_ivl_at(xs, xv);
+                if k > 0
+                    Hc(jr, k) = Hc(jr, k) + lamX;
+                end
+            end
+            jr2 = find(ys >= ya - 10 & ys <= yb + 10);
+            if ~isempty(jr2)
+                for jj = jr2
+                    for k = 1:nx-1
+                        if Hc(jj, k) < Inf && ...
+                           min(abs(xs(k) - xv), abs(xs(k+1) - xv)) <= 10
+                            Hc(jj, k) = Hc(jj, k) + lamC;
+                        end
+                    end
+                end
+            end
+            ir2 = find(xs >= xv - 10 & xs <= xv + 10);
+            [ja, jb] = astar_ivl(ys, ya - 10, yb + 10);
+            if ~isempty(ir2) && ja > 0
+                for ii = ir2
+                    if ii <= nx
+                        for jv = ja:jb
+                            if Vc(jv, ii) < Inf
+                                Vc(jv, ii) = Vc(jv, ii) + lamC;
+                            end
+                        end
+                    end
+                end
+            end
+        else
+            ASTARPHASE = 'wireH-hard';
+            yh = sw(2);
+            xa = min(sw(1), sw(3));
+            xb = max(sw(1), sw(3));
+            j = find(abs(ys - yh) < 0.5, 1);
+            if ~isempty(j)
+                [ia, ib] = astar_ivl(xs, xa, xb);
+                if ia > 0
+                    Hc(j, ia:ib) = Inf;
+                end
+            end
+            ASTARPHASE = 'wireH-cross';
+            ir = find(xs >= xa - 0.5 & xs <= xb + 0.5);
+            if ~isempty(ir)
+                j2 = astar_ivl_at(ys, yh);
+                if j2 > 0
+                    Vc(j2, ir) = Vc(j2, ir) + lamX;
+                end
+            end
+            ASTARPHASE = 'wireH-congV';
+            ir2 = find(xs >= xa - 10 & xs <= xb + 10);
+            if ~isempty(ir2)
+                for ii = ir2
+                    for j = 1:ny-1
+                        if Vc(j, ii) < Inf && ...
+                           min(abs(ys(j) - yh), abs(ys(j+1) - yh)) <= 10
+                            Vc(j, ii) = Vc(j, ii) + lamC;
+                        end
+                    end
+                end
+            end
+            ASTARPHASE = 'wireH-congH';
+            jr2 = find(ys >= yh - 10 & ys <= yh + 10);
+            if ~isempty(jr2)
+                [ia, ib] = astar_ivl(xs, xa - 10, xb + 10);
+                if ia > 0
+                    for jj = jr2
+                        for k2 = ia:ib
+                            if Hc(jj, k2) < Inf
+                                Hc(jj, k2) = Hc(jj, k2) + lamC;
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    % nudge hard bans: whole rows / columns near the banned coordinate
+    for t = 1:numel(hardBanX)
+        ii = find(abs(xs - hardBanX(t)) < 4);
+        if ~isempty(ii)
+            Vc(:, ii) = Inf;
+        end
+    end
+    for t = 1:numel(hardBanY)
+        jj = find(abs(ys - hardBanY(t)) < 4);
+        if ~isempty(jj)
+            Hc(jj, :) = Inf;
+        end
+    end
+
+    ASTARPHASE = 'search';
+    % ---------------- direction-state A* ----------------
+    is0 = find(abs(xs - (sx + 8)) < 0.5, 1);
+    js0 = find(abs(ys - sy) < 0.5, 1);
+    if isempty(is0) || isempty(js0)
+        msg = 'astar: no start node';
+        return;
+    end
+    if is0 > 1
+        Hc(js0, is0 - 1) = Inf;   % never double back over the exit stub
+    end
+    if vertEntry
+        gi = find(abs(xs - dx) < 0.5, 1);
+        gjs = find(abs(ys - dy) <= 20.5 & abs(ys - dy) > 0.5);
+        if isempty(gi) || isempty(gjs)
+            msg = 'astar: no goal node';
+            return;
+        end
+    else
+        gi = find(abs(xs - ex) < 0.5, 1);
+        gjs = find(abs(ys - dy) < 0.5, 1);
+        if isempty(gi) || isempty(gjs)
+            msg = 'astar: no goal node';
+            return;
+        end
+    end
+    gx = xs(gi);
+
+    g3 = inf(ny, nx, 2);
+    parI = zeros(ny, nx, 2);
+    parJ = zeros(ny, nx, 2);
+    parD = zeros(ny, nx, 2);
+    cl3 = false(ny, nx, 2);
+    h0 = abs(xs(is0) - gx) + astar_hrow(ys(js0), ys, gjs);
+    oI = is0; oJ = js0; oD = 1; oG = 0; oF = h0;
+    g3(js0, is0, 1) = 0;
+    found = false;
+    pops = 0;
+    while ~isempty(oF)
+        [fmin, kk] = min(oF); %#ok<NASGU>
+        ci = oI(kk); cj = oJ(kk); cd = oD(kk); cg = oG(kk);
+        oI(kk) = []; oJ(kk) = []; oD(kk) = []; oG(kk) = []; oF(kk) = [];
+        if cl3(cj, ci, cd), continue; end
+        cl3(cj, ci, cd) = true;
+        pops = pops + 1;
+        if pops > aopts.budget
+            msg = 'astar: budget exceeded';
+            return;
+        end
+        if ci == gi && ~isempty(find(cj == gjs, 1))
+            found = true;
+            break;
+        end
+        for mv = 1:4
+            if mv == 1
+                ni = ci + 1;
+                if ni > nx, continue; end
+                nj = cj; ec = Hc(cj, ci); nd = 1;
+            elseif mv == 2
+                ni = ci - 1;
+                if ni < 1, continue; end
+                nj = cj; ec = Hc(cj, ni); nd = 1;
+            elseif mv == 3
+                nj = cj + 1;
+                if nj > ny, continue; end
+                ni = ci; ec = Vc(cj, ci); nd = 2;
+            else
+                nj = cj - 1;
+                if nj < 1, continue; end
+                ni = ci; ec = Vc(nj, ci); nd = 2;
+            end
+            if ~(ec < Inf), continue; end
+            if nd ~= cd, ec = ec + aopts.bend; end
+            ng = cg + ec;
+            if ng < g3(nj, ni, nd) && ~cl3(nj, ni, nd)
+                g3(nj, ni, nd) = ng;
+                parI(nj, ni, nd) = ci;
+                parJ(nj, ni, nd) = cj;
+                parD(nj, ni, nd) = cd;
+                oI(end+1) = ni; oJ(end+1) = nj; oD(end+1) = nd;
+                oG(end+1) = ng;
+                oF(end+1) = ng + abs(xs(ni) - gx) + ...
+                            astar_hrow(ys(nj), ys, gjs);
+            end
+        end
+    end
+    if ~found
+        msg = 'astar: no path found';
+        return;
+    end
+
+    ASTARPHASE = 'emit';
+    % ---------------- reconstruct + emit ----------------
+    nodes = [ci cj cd];
+    while ~(nodes(1,1) == is0 && nodes(1,2) == js0)
+        cI = nodes(1,1); cJ = nodes(1,2); cD = nodes(1,3);
+        pI = parI(cJ, cI, cD); pJ = parJ(cJ, cI, cD); pD = parD(cJ, cI, cD);
+        if pI == 0 && pJ == 0
+            break;
+        end
+        nodes = [pI pJ pD; nodes]; %#ok<AGROW>
+    end
+    pts = [P0; xs(is0), ys(js0)];
+    prevD = 1;
+    for t = 2:size(nodes, 1)
+        if nodes(t,3) ~= prevD
+            pts(end+1, :) = [xs(nodes(t-1,1)), ys(nodes(t-1,2))]; %#ok<AGROW>
+            prevD = nodes(t,3);
+        end
+    end
+    pts(end+1, :) = [xs(nodes(end,1)), ys(nodes(end,2))]; %#ok<AGROW>
+    P = dedup_pts(pts);
+    set_param(lineH, 'Points', P);
+    Pr = get_param(lineH, 'Points');
+    if ~all_orthogonal(Pr)
+        msg = 'astar: sheared on emit';
+        return;
+    end
+    if abs(Pr(1,1) - P0(1)) > 0.5 || abs(Pr(1,2) - P0(2)) > 0.5
+        msg = 'astar: anchor moved';
+        return;
+    end
+    % audit all segments except the port stubs (first = exit stub, last =
+    % entry rung -- both R14-mandated and inside the margin zone by design)
+    for j = 3:size(Pr, 1) - 1
+        if abs(Pr(j,2) - Pr(j-1,2)) < 0.5
+            if seg_blocked_h(Pr(j-1,1), Pr(j,1), Pr(j,2), R)
+                msg = 'astar: obstacle on emit';
+                return;
+            end
+        else
+            if seg_blocked_v(Pr(j-1,2), Pr(j,2), Pr(j,1), R)
+                msg = 'astar: obstacle on emit';
+                return;
+            end
+        end
+    end
+    for j = 2:size(Pr, 1)
+        for s = 1:size(wireA, 1)
+            if wireFam(s) == myFam, continue; end
+            sw = wireA(s, :);
+            ov = 0;
+            if abs(Pr(j,2) - Pr(j-1,2)) < 0.5 && abs(sw(2) - sw(4)) < 0.5 ...
+                    && abs(Pr(j,2) - sw(2)) < 0.5
+                ov = min(max(Pr(j,1), Pr(j-1,1)), max(sw(1), sw(3))) - ...
+                     max(min(Pr(j,1), Pr(j-1,1)), min(sw(1), sw(3)));
+            end
+            if abs(Pr(j,1) - Pr(j-1,1)) < 0.5 && abs(sw(1) - sw(3)) < 0.5 ...
+                    && abs(Pr(j,1) - sw(1)) < 0.5
+                ov = min(max(Pr(j,2), Pr(j-1,2)), max(sw(2), sw(4))) - ...
+                     max(min(Pr(j,2), Pr(j-1,2)), min(sw(2), sw(4)));
+            end
+            if ov > 6
+                msg = 'astar: wire overlap on emit';
+                return;
+            end
+        end
+    end
+    ok = true;
+    if ~isempty(ASTARSTAT), ASTARSTAT(2) = ASTARSTAT(2) + 1; end
+catch
+    realMsg = lasterr;
+    msg = ['astar failed [', ASTARPHASE, '] nx=', num2str(numel(xs)), ...
+           ' ny=', num2str(numel(ys)), ' : ', realMsg];
+    global ASTARSTAT
+    if ~isempty(ASTARSTAT)
+        try
+            save('astar_debug.mat', 'xs', 'ys', 'wireA', 'wireFam', ...
+                 'myFam', 'R', 'sx', 'sy', 'dx', 'dy', 'ex', 'P0', 'nx', 'ny');
+        catch
+        end
+    end
+end
+end
+
+% ------------------------------------------------------------------
+function v = astar_merge(vals, lo, hi)
+% sort, clamp, drop duplicates and anything closer than 5 px to the last kept
+v = sort(vals(:)');
+keep = [];
+for k = 1:numel(v)
+    if v(k) < lo || v(k) > hi, continue; end
+    if isempty(keep) || v(k) - keep(end) > 4
+        keep(end+1) = v(k); %#ok<AGROW>
+    end
+end
+v = keep;
+end
+
+% ------------------------------------------------------------------
+function v = astar_force(vals, need)
+% insert exact required coordinates (start/goal nodes must exist verbatim)
+v = vals;
+for k = 1:numel(need)
+    if isempty(find(abs(v - need(k)) < 0.5, 1))
+        v(end+1) = need(k); %#ok<AGROW>
+    end
+end
+v = sort(v);
+end
+
+% ------------------------------------------------------------------
+function [j1, j2] = astar_ivl(vals, a, b)
+% index range [j1,j2] of intervals [vals(j),vals(j+1)] overlapping [a,b]
+j1 = find(vals(2:end) > a, 1);
+j2 = find(vals(1:end-1) < b, 1, 'last');
+if isempty(j1) || isempty(j2) || j1 > j2
+    j1 = 0; j2 = 0;
+end
+end
+
+% ------------------------------------------------------------------
+function k = astar_ivl_at(vals, v)
+% index of the interval [vals(k),vals(k+1)] containing v; 0 if outside
+if v < vals(1) || v > vals(end)
+    k = 0;
+    return;
+end
+k = find(vals <= v, 1, 'last');
+if k >= numel(vals), k = numel(vals) - 1; end
+end
+
+% ------------------------------------------------------------------
+function h = astar_hrow(y, ys, gjs)
+% admissible vertical distance to the nearest goal row
+h = inf;
+for k = 1:numel(gjs)
+    h = min(h, abs(y - ys(gjs(k))));
+end
+if isinf(h), h = 0; end
 end
