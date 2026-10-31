@@ -1,7 +1,0 @@
-{"id":0,"ok":true,"stdout":"worker-boot","pid":28304,"version":"7.0.0.19920 (R14)"}
-{"id":1,"ok":true,"stdout":"hello from fresh worker\r\n\r\n"}
-{"id":2,"ok":true,"value":{"clean":true,"issues":""}}
-{"id":3,"ok":false,"stdout":"step 1 ok\r\nstep 2 ok\r\nERROR: Undefined command/function 'undefined_fn_x'.\r\n\r\n","error":"(console tail, last 30 lines)\nstep 1 ok\r\n\nstep 2 ok\r\n\nERROR: Undefined command/function 'undefined_fn_x'.\r\n\n\r\n"}
-{"id":0,"ok":true,"stdout":"worker-boot","pid":14168,"version":"7.0.0.19920 (R14)"}
-{"id":1,"ok":true,"stdout":"     2\r\n\r\n\r\n","cmd":"eval"}
-{"id":2,"ok":false,"stdout":"ERROR: deliberate test failure\r\n\r\n","error":"(console tail, last 30 lines)\nERROR: deliberate test failure\r\n\n\r\n","cmd":"eval"}

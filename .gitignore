@@ -24,3 +24,12 @@ Thumbs.db
 .DS_Store
 worker_boot.log.1
 res_last.json
+res_history.jsonl
+res_last.json
+res.json
+req.json
+worker.pid
+busy.json
+progress.json
+*.diary
+worker_boot.log
