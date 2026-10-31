@@ -73,15 +73,30 @@ NL = char(10);
 while true
     got = false;
     raw = '';
+    reqpath = '';
     try
-        d1 = dir(reqfile);
-        if ~isempty(d1) && d1(1).bytes >= 10
-            pause(0.05);
-            d2 = dir(reqfile);
-            if ~isempty(d2) && d2(1).bytes == d1(1).bytes
-                raw = read_bin(reqfile);
-                got = true;
-                delete(reqfile);
+        % v3.2 instance isolation: poll EVERY instance channel (req_i*.json)
+        % plus the legacy req.json, oldest first (FIFO across instances).
+        % Each server owns its own req file, so shared-queue write races are
+        % structurally impossible.
+        cands = [dir(fullfile(pwd, 'req_i*.json')); dir('req.json')];
+        if ~isempty(cands)
+            % oldest first for FIFO fairness. R14 dir() has no datenum field
+            % and no ~ output-ignoring, so order by name with a dummy first
+            % output (Windows dir listing is name-ordered anyway).
+            [junk, idx] = sort({cands.name}); %#ok<ASGLU>
+            cands = cands(idx);
+            f1 = fullfile(pwd, cands(1).name);
+            d1 = dir(f1);
+            if ~isempty(d1) && d1(1).bytes >= 10
+                pause(0.05);
+                d2 = dir(f1);
+                if ~isempty(d2) && d2(1).bytes == d1(1).bytes
+                    raw = read_bin(f1);
+                    got = true;
+                    reqpath = f1;
+                    delete(f1);
+                end
             end
         end
     end
@@ -104,16 +119,27 @@ while true
     write_busy(busyfile, rid, raw);
     stopReq = false;
     resp = '';
+    replyfile = resfile;
     try
         req = parse_req(raw);
         rid = req.id;
-        [stopReq, resp] = handle_req(req, resfile);
+        % v3.2 instance isolation: a request may carry "reply" naming the
+        % server instance tag; the response goes to res_<reply>.json so two
+        % servers sharing this worker never read each other's answers.
+        % Requests without "reply" (legacy server) answer on resfile as before.
+        try
+            if isfield(req, 'reply') && ~isempty(req.reply)
+                [rpdir, rpname] = fileparts(resfile);
+                replyfile = fullfile(rpdir, ['res_' req.reply '.json']);
+            end
+        end
+        [stopReq, resp] = handle_req(req, replyfile);
     catch
         msg = lasterr;
         resp = ['{"id":' num2str(rid) ',"ok":false,"error":' jstr(msg) '}'];
     end
     if ~stopReq && ~isempty(resp)
-        write_resp(resfile, resp);
+        write_resp(replyfile, resp);
     end
     try
         if exist(busyfile, 'file'), delete(busyfile); end
@@ -233,6 +259,68 @@ switch cmd
         % Run a .m file: fresh (clear cached function by name), auto cd into
         % its folder, always restore the previous working directory.
         [stopReq, resp] = do_run_file(req, resfile);
+
+    case 'assert'
+        % v3.2 batch grading: evaluate one expression in the base workspace
+        % and record the boolean result into a base-workspace cell variable
+        % (MCP_ASSERT_LOG). Base workspace, NOT a global: R14 global bindings
+        % declared inside try blocks proved unreliable across handle_req
+        % calls, and the log must persist between requests.
+        % Group tests with req.group; label each with req.text (the what).
+        resp = '';
+        grp = '';
+        what = 'assert';
+        try
+            if isfield(req, 'text') && ~isempty(req.text), what = req.text; end
+            if isfield(req, 'group'), grp = req.group; end
+            v = evalin('base', req.code);
+            passed = ~isempty(v) && islogical(v) && v == true;
+            if ~islogical(v)
+                passed = ~isempty(v) && isnumeric(v) && ~isnan(v(1)) && v(1) ~= 0;
+            end
+            % stash the actual value so the report can show expected vs got
+            try
+                dv = mcp2json(v);
+            catch
+                dv = '"?"';
+            end
+            mcp_assert_log(grp, what, passed, dv);
+            resp = ['{"id":' num2str(req.id) ',"ok":true,"value":{"passed":' bool2str(passed) ...
+                ',"name":' jstr(what) ',"got":' dv '}}'];
+        catch
+            % a throwing expression is a failed assertion, not a tool error
+            mcp_assert_log(grp, what, false, jstr(lasterr));
+            resp = ['{"id":' num2str(req.id) ',"ok":true,"value":{"passed":false' ...
+                ',"name":' jstr(what) ',"error":' jstr(lasterr) '}}'];
+        end
+
+    case 'assert_report'
+        % Summarize (and optionally clear) the MCP_ASSERT_LOG base variable.
+        try
+            L = [];
+            try
+                L = evalin('base', 'MCP_ASSERT_LOG');
+            end
+            if ~isa(L, 'cell'), L = {}; end
+            n = size(L, 1);
+            npass = 0;
+            lines = cell(1, n);
+            for k = 1:n
+                if L{k, 3}, npass = npass + 1; end
+                lines{k} = sprintf('%s [%s] %s', L{k, 1}, ...
+                    mpl_bool(L{k, 3}), L{k, 2});
+            end
+            clearIt = isfield(req, 'close') && req.close == 1;
+            if clearIt
+                assignin('base', 'MCP_ASSERT_LOG', {});
+            end
+            resp = ['{"id":' num2str(req.id) ',"ok":true,"value":{"total":' num2str(n) ...
+                ',"passed":' num2str(npass) ...
+                ',"cleared":' bool2str(clearIt) ...
+                ',"lines":' mcp2json(lines) '}}'];
+        catch
+            resp = ['{"id":' num2str(req.id) ',"ok":false,"error":' jstr(lasterr) '}'];
+        end
 
     case 'get'
         try
@@ -739,7 +827,8 @@ function req = parse_req(raw)
 req = struct('id', 0, 'cmd', 'ping', 'code', '', 'var', '', 'file', '', ...
     'fig', 0, 'dpi', 0, 'close', 0, 'enc', 'auto', 'content', '', 'value_json', '', ...
     'model', '', 'fix', 0, 'max_rows', 0, 'close_figs', 0, 'close_models', 0, ...
-    'text', '', 'spacing', 0, 'margin', 0, 'sys', '', 'xgap', 0, 'ygap', 0);
+    'text', '', 'spacing', 0, 'margin', 0, 'sys', '', 'xgap', 0, 'ygap', 0, ...
+    'reply', '', 'group', '');
 p = json_decode(raw);
 if isfield(p, 'id'),          req.id = p.id;   end
 if isfield(p, 'cmd'),         req.cmd = p.cmd; end
@@ -763,6 +852,29 @@ if isfield(p, 'margin'),      req.margin = p.margin; end
 if isfield(p, 'sys'),         req.sys = p.sys; end
 if isfield(p, 'xgap'),        req.xgap = p.xgap; end
 if isfield(p, 'ygap'),        req.ygap = p.ygap; end
+if isfield(p, 'reply'),       req.reply = p.reply; end
+if isfield(p, 'group'),       req.group = p.group; end
+end
+
+function mcp_assert_log(grp, what, passed, detail)
+% Append one row {group, label, passed, detail} to the MCP_ASSERT_LOG cell
+% array in the BASE workspace (survives across requests; immune to the R14
+% global-in-try scope quirk that broke the first cut of this feature).
+L = [];
+try
+    L = evalin('base', 'MCP_ASSERT_LOG');
+end
+if ~isa(L, 'cell'), L = {}; end
+k = size(L, 1) + 1;
+L{k, 1} = grp;
+L{k, 2} = what;
+L{k, 3} = passed;
+L{k, 4} = detail;
+assignin('base', 'MCP_ASSERT_LOG', L);
+end
+
+function s = mpl_bool(v)
+if v, s = 'PASS'; else, s = 'FAIL'; end
 end
 
 function s = jstr(t)

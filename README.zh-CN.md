@@ -2,7 +2,7 @@
 
 # matlab7-mcp
 
-**让 AI 助手操控 MATLAB 7.0 (R14, 2004) 的 MCP 服务器——24 个工具、零 npm 依赖、Simulink 正交自动布线与块自动重排**
+**让 AI 助手操控 MATLAB 7.0 (R14, 2004) 的 MCP 服务器——26 个工具、零 npm 依赖、Simulink 正交自动布线与块自动重排**
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
@@ -54,7 +54,7 @@ MCP客户端 ──MCP stdio──> mcp-server.js (Node, 零依赖)
                        base workspace / figure / Simulink
 ```
 
-- `mcp-server.js` — MCP stdio 服务器：24 个工具定义、参数校验、请求文件、
+- `mcp-server.js` — MCP stdio 服务器：26 个工具定义、参数校验、请求文件、
   `fs.watch` 响应监视（100ms 兜底轮询）、`busy.json` 心跳。
 - `mcp_worker.m` — R14 内常驻 worker：轮询请求 → base workspace 求值 →
   diary 捕获输出 → 序列化写响应。**所有分支都有 catch，worker 必定回话。**
@@ -141,7 +141,7 @@ README，全部由你自己完成：
 
 AI 部署完成后，重启 MCP 客户端，说一句"列出我的 MATLAB workspace"即可确认。
 
-## 工具清单（24 个）
+## 工具清单（26 个）
 
 **执行与诊断**
 
@@ -151,6 +151,7 @@ AI 部署完成后，重启 MCP 客户端，说一句"列出我的 MATLAB worksp
 | `matlab_check` | 语法检查不运行：块关键字配平 + pcode 全量解析 |
 | `matlab_run_file` | 运行 `.m` 文件（自动 clear 该函数缓存、恢复工作目录） |
 | `matlab_status` / `matlab_restart` | worker 状态（含 busy 命令与已耗时）/ 重启 |
+| `matlab_assert` / `matlab_assert_report` | 批量判分：把布尔表达式的 PASS/FAIL 记入 worker 持久日志（抛错=FAIL）/ 汇总并可清零 |
 | `matlab_last` | 最近一次已完成任务的输出——抢救被客户端超时切断的 eval 的控制台文本；`job_id` 从 20 条历史中取回更早任务，`list` 列出最近任务表 |
 | `matlab_progress` | 读回最近一次 eval 里 `mcp_progress(frac, msg)` 的打点（v3.1 起可边跑边轮询——server 不再阻塞） |
 
@@ -275,7 +276,9 @@ v3.2 同批 robustness 改进（来自长任务实战）：
 - **任务历史环形缓冲**——每个完成的 worker 响应追加进 `res_history.jsonl`（保留最近 20 条）。`matlab_last` 新增 `job_id` 取回更早任务（此前一次后续调用会永久覆盖超时任务的输出）、`list` 列出最近任务表。
 - **eval 出错带控制台上下文**——失败 eval 的 `error` 自动附 diary 尾巴（末 30 行），一次调用同时看到"错在哪 + 之前发生了什么"。
 - **`mcp_check` 索引 `end` 修复**——块平衡扫描器在闭括号减深度**之后**才结算词元，导致 `f(x(end))` / `c{end}` / `a(k:end)` 被误判为块 `end` 而拒掉合法代码。现在词元先结算、深度后更新。
-- `check_static.js` 的版本断言改为从 server 源码派生（格式+最低版本），升版本不再需要改测试。
+
+- **实例独立协议通道**——每个 server 进程走自己的 `req_i<pid>.json` / `res_i<pid>.json`（请求带 `reply` 标签；worker 轮询全部 `req_i*.json` + 兼容旧 `req.json`，按请求方通道回写）。两个 ZCode 会话共用 matlab7 不再互踩；MATLAB worker 与 pidfile 共享，boot.lock 防双 MATLAB 冷启动。
+- **`matlab_assert` / `matlab_assert_report`**——R14 批量判分原语（无单元测试框架）：每次记录一个布尔表达式的 PASS/FAIL 到 base workspace 日志（抛错=FAIL），最后汇总分组 PASS/FAIL 表并可清零。典型流程：`matlab_run_file` 跑学生脚本 → 每个预期锚点值一条 assert → 一条 report 收尾。- `check_static.js` 的版本断言改为从 server 源码派生（格式+最低版本），升版本不再需要改测试。
 
 其余官方接口在 R14 上不适用（`run_matlab_test_file` 依赖单元测试框架、共享会话需 R2023a+），不补。
 
@@ -420,7 +423,7 @@ node check_static.js          # 无需 MATLAB：ASCII/工具数/README/隐私一
 node v3_regress.js <仓库目录>   # 全量回归：真 server + 真 R14 worker，47 组断言
 ```
 
-回归测试起真 stdio server + 真 MATLAB worker，跑 47 组断言覆盖全部 24 个工具
+回归测试起真 stdio server + 真 MATLAB worker，跑 47 组断言覆盖全部 26 个工具
 （当前全过）。需要交互桌面会话（窗口截图）。`v3_smoke_window.js` 单测截图
 链路；`v3_smoke_arrange.js <模型路径>` 在任意 Simulink 模型上单测
 arrange+route 管线。CI（GitHub Actions）在每次 push 时跑静态层；MATLAB 层

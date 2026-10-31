@@ -231,6 +231,11 @@ async function main() {
   await T('status', true, () => tool('matlab_status', {}));
 
   console.log(`\n==== RESULT: ${results.pass} pass, ${results.fail} fail ====`);
+  // teardown: drop artifacts this round wrote into the repo dir (the ascii
+  // static check fails if v3_test_file.m with Chinese content is left behind)
+  for (const f of ['v3_test_file.m', 'v3_log.md', 'v3tst.mdl', 'progress.json']) {
+    try { fs.unlinkSync(path.join(WORK, f)); } catch {}
+  }
   proc.kill();
   process.exit(results.fail > 0 ? 1 : 0);
 }

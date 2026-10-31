@@ -78,14 +78,26 @@ const path = require('path');
 // ---------------------------------------------------------------- config
 const SERVER_DIR = __dirname;
 const WORK_DIR = process.env.MCP_WORK_DIR || SERVER_DIR;
-const REQ_FILE = path.join(WORK_DIR, 'req.json');
-const RES_FILE = path.join(WORK_DIR, 'res.json');
-const RES_LAST_FILE = path.join(WORK_DIR, 'res_last.json');
-const RES_HIST_FILE = path.join(WORK_DIR, 'res_history.jsonl');
+// v3.2 instance isolation: each server process gets its own request/response/
+// progress/history channels (req_<pid>.json etc.) so two ZCode sessions using
+// matlab7 simultaneously no longer stomp each other's protocol files. The
+// MATLAB worker itself is SHARED: requests are picked up in arrival order and
+// each response goes back on the channel named in the launch command — the
+// worker needs no changes because it already writes to whatever resfile it
+// was started with... EXCEPT the response must return to the requesting
+// instance, so instead the worker keeps ONE shared req queue but writes
+// per-instance responses: the request carries "reply" (instance tag) and the
+// worker honors it. worker.pid / busy.json / worker_boot.log stay shared.
+const INST = 'i' + process.pid;
+const REQ_FILE = path.join(WORK_DIR, 'req_' + INST + '.json');
+const RES_FILE = path.join(WORK_DIR, 'res_' + INST + '.json');
+const RES_LAST_FILE = path.join(WORK_DIR, 'res_last_' + INST + '.json');
+const RES_HIST_FILE = path.join(WORK_DIR, 'res_history_' + INST + '.jsonl');
 const HIST_KEEP = 20; // ring buffer size for completed-job history
 const PID_FILE = path.join(WORK_DIR, 'worker.pid');
 const BUSY_FILE = path.join(WORK_DIR, 'busy.json');
 const PROGRESS_FILE = path.join(WORK_DIR, 'progress.json');
+const BOOT_LOCK = path.join(WORK_DIR, 'boot.lock');
 const CAP_PS1 = path.join(SERVER_DIR, 'cap_window.ps1');
 const BOOT_WAIT_SEC = parseInt(process.env.MCP_BOOT_WAIT || '120', 10);
 const KILL_ALL = process.env.MCP_KILL_ALL === '1';
@@ -215,14 +227,43 @@ async function killStaleWorker() {
     if (!pidAlive(pid)) break;
     await sleep(500);
   }
-  // clear protocol files from any previous session
-  for (const f of [REQ_FILE, RES_FILE, BUSY_FILE]) {
-    try { if (fs.existsSync(f)) fs.unlinkSync(f); } catch {}
-  }
+  // clear protocol files from any previous session (all instances + legacy)
+  try {
+    for (const f of fs.readdirSync(WORK_DIR)) {
+      if (/^(req_i\d+|res_i\d+|res_boot)\.json$/.test(f) ||
+          f === 'req.json' || f === 'res.json' || f === BUSY_FILE) {
+        try { fs.unlinkSync(path.join(WORK_DIR, f)); } catch {}
+      }
+    }
+  } catch {}
 }
 
 async function startWorker() {
   if (!MATLAB_EXE) throw new Error('MATLAB 7.0 not found. Set MATLAB7_DIR env var.');
+  // v3.2: the worker is SHARED between server instances. If another instance
+  // is already booting (boot.lock fresh) or a live worker exists, wait for it
+  // instead of spawning a second MATLAB.
+  const lockFresh = (() => {
+    try {
+      const st = fs.statSync(BOOT_LOCK);
+      return (Date.now() - st.mtimeMs) < BOOT_WAIT_SEC * 1000;
+    } catch { return false; }
+  })();
+  const pid0 = readPid();
+  if (lockFresh && !pid0) {
+    // another instance is mid-boot — wait for the shared pidfile
+    const t0w = Date.now();
+    while (Date.now() - t0w < BOOT_WAIT_SEC * 1000) {
+      const p = readPid();
+      if (p && pidAlive(p)) return;
+      await sleep(500);
+    }
+    throw new Error('Another mcp-server instance was booting the worker but it never came up');
+  }
+  if (pid0 && pidAlive(pid0)) return; // healthy shared worker already running
+
+  // We are the booter: take the lock so late joiners wait on us.
+  try { fs.writeFileSync(BOOT_LOCK, String(process.pid), 'utf8'); } catch {}
   killStaleWorker();
   // Rotate the boot log so it cannot grow without bound (R14 appends forever).
   try {
@@ -232,7 +273,7 @@ async function startWorker() {
   // progress.json from a previous session would make matlab_progress report
   // stale numbers before the first eval of this session has run.
   try { if (fs.existsSync(PROGRESS_FILE)) fs.unlinkSync(PROGRESS_FILE); } catch {}
-  const code = `cd('${WORK_DIR.replace(/\\/g, '/')}'), addpath('${SERVER_DIR.replace(/\\/g, '/')}'), mcp_worker('req.json','res.json','worker.pid','busy.json'), exit`;
+  const code = `cd('${WORK_DIR.replace(/\\/g, '/')}'), addpath('${SERVER_DIR.replace(/\\/g, '/')}'), mcp_worker('req.json','res_boot.json','worker.pid','busy.json'), exit`;
   workerProc = spawn(MATLAB_EXE, ['-nosplash', '-nodesktop', '-logfile', path.join(WORK_DIR, 'worker_boot.log'), '-r', code], {
     cwd: WORK_DIR,
     detached: false,
@@ -240,20 +281,25 @@ async function startWorker() {
   });
   workerProc.on('exit', () => { workerProc = null; workerBootedAt = null; });
 
+  // The boot response lands on the shared res_boot.json (not any instance's
+  // own channel); boot success = live shared pidfile.
+  const BOOT_RES = path.join(WORK_DIR, 'res_boot.json');
   const t0 = Date.now();
   while (Date.now() - t0 < BOOT_WAIT_SEC * 1000) {
-    if (fs.existsSync(RES_FILE)) {
+    if (fs.existsSync(BOOT_RES)) {
       try {
-        const j = JSON.parse(fs.readFileSync(RES_FILE, 'utf8'));
+        const j = JSON.parse(fs.readFileSync(BOOT_RES, 'utf8'));
         if (j.ok) {
           workerBootedAt = new Date().toISOString();
           workerVersion = j.version || '';
+          try { fs.unlinkSync(BOOT_LOCK); } catch {}
           return;
         }
       } catch {}
     }
     await sleep(500); // v3.1: yield to the event loop while booting
   }
+  try { fs.unlinkSync(BOOT_LOCK); } catch {}
   throw new Error(`MATLAB worker failed to boot within ${BOOT_WAIT_SEC}s`);
 }
 
@@ -303,7 +349,7 @@ function archiveRes() {
  */
 async function workerRequest(payload, timeoutSec) {
   await ensureWorker();  const id = nextId++;
-  const req = JSON.stringify(Object.assign({ id }, payload));
+  const req = JSON.stringify(Object.assign({ id, reply: INST }, payload));
   pendingCmd[id] = payload.cmd || '?';
   // 1) archive + clear any previous response (matlab_last can still read it)
   archiveRes();
@@ -675,6 +721,36 @@ const TOOLS = [
     description: 'Kill the MATLAB worker process and start a fresh one (clears base workspace; runs worker_init.m if present).',
     inputSchema: { type: 'object', properties: {} },
   },
+  {
+    name: 'matlab_assert',
+    description: 'Batch grading primitive (R14, no unittest framework): evaluate one boolean '
+      + 'expression in the base workspace and record PASS/FAIL into a persistent log inside '
+      + 'the worker. A throwing expression counts as FAIL, not a tool error. Results '
+      + 'accumulate across calls — collect them with matlab_assert_report. '
+      + 'Typical loop: run a student script via matlab_run_file, then one matlab_assert '
+      + 'per expected result.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        code: { type: 'string', description: 'Boolean MATLAB expression, e.g. "abs(E - 1.09) < 0.01" or "strcmp(class(y), \'double\')"' },
+        text: { type: 'string', description: 'Human label of this check (what is being asserted)' },
+        group: { type: 'string', description: 'Group tag, e.g. the student name or experiment number' },
+      },
+      required: ['code'],
+    },
+  },
+  {
+    name: 'matlab_assert_report',
+    description: 'Summarize the assertion log accumulated by matlab_assert: total, passed, and '
+      + 'one PASS/FAIL line per check. Pass clear=true to empty the log after collecting '
+      + '(or to start a fresh batch).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        clear: { type: 'boolean', description: 'Empty the assertion log after reporting (default false)' },
+      },
+    },
+  },
 ];
 
 let figCounter = 0;
@@ -982,6 +1058,29 @@ async function callTool(name, args) {
     case 'matlab_restart': {
       await startWorker();
       return textOut(`Worker restarted (PID ${readPid()})`);
+    }
+    case 'matlab_assert': {
+      const r = await workerRequest({
+        cmd: 'assert',
+        code: String(args.code),
+        text: args.text ? String(args.text) : '',
+        group: args.group ? String(args.group) : '',
+      }, 60);
+      if (!r.ok) return textOut('Error: ' + (r.error || 'unknown'), true);
+      const v = r.value || {};
+      const head = `${v.passed ? 'PASS' : 'FAIL'}  ${v.name || '(unlabeled)'}`;
+      const tail = v.error ? `\n  threw: ${v.error}` : (v.got !== undefined ? `\n  got: ${JSON.stringify(v.got)}` : '');
+      return textOut(head + tail, !v.passed);
+    }
+    case 'matlab_assert_report': {
+      const r = await workerRequest({
+        cmd: 'assert_report',
+        close: args.clear ? 1 : 0,
+      }, 60);
+      if (!r.ok) return textOut('Error: ' + (r.error || 'unknown'), true);
+      const v = r.value || {};
+      const lines = (v.lines || []).join('\n');
+      return textOut(`${v.passed}/${v.total} passed${v.cleared ? ' (log cleared)' : ''}\n${lines}`);
     }
     default:
       throw new Error('Unknown tool: ' + name);

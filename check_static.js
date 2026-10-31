@@ -27,7 +27,7 @@ for (const f of fs.readdirSync(ROOT).filter((x) => x.endsWith('.m'))) {
 // ---- 2. tool count in server ---------------------------------------------
 const server = fs.readFileSync(path.join(ROOT, 'mcp-server.js'), 'utf8');
 const toolDefs = [...server.matchAll(/^\s*name: '(matlab_[a-z_]+)',$/gm)].map((m) => m[1]);
-check('server:24-tools', toolDefs.length === 24, `${toolDefs.length} defs`);
+check('server:26-tools', toolDefs.length === 26, `${toolDefs.length} defs`);
 // Version and tool counts are derived, not hardcoded: read the version the
 // server actually advertises and require only its shape, so a future bump
 // doesn't need a test edit.

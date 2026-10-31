@@ -3,7 +3,7 @@
 # matlab7-mcp
 
 **An MCP server that lets AI agents drive MATLAB 7.0 (R14, 2004) on Windows —
-24 tools, zero npm dependencies, Simulink orthogonal auto-routing & block auto-arrangement**
+26 tools, zero npm dependencies, Simulink orthogonal auto-routing & block auto-arrangement**
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
@@ -156,7 +156,7 @@ ask me instead of guessing.
 After the agent finishes, restart your MCP client and try
 *"list my MATLAB workspace"* to confirm.
 
-## Tools (24)
+## Tools (26)
 
 **Execution & diagnostics**
 
@@ -166,6 +166,7 @@ After the agent finishes, restart your MCP client and try
 | `matlab_check` | Syntax-check without running: block-keyword balance + full pcode parse |
 | `matlab_run_file` | Run a `.m` file (auto-clears its function cache, restores cwd) |
 | `matlab_status` / `matlab_restart` | Worker status (incl. busy command + elapsed seconds) / restart |
+| `matlab_assert` / `matlab_assert_report` | Batch grading: record PASS/FAIL of a boolean expression into a persistent worker log (throwing = FAIL) / summarize and optionally clear it |
 | `matlab_last` | Output of the most recent completed job — rescues console text of evals whose tool call was cut by a client timeout; `job_id` fetches an older job from the 20-entry history, `list` shows the recent-job table |
 | `matlab_progress` | Read `mcp_progress(frac, msg)` markers from the last eval (v3.1: pollable WHILE the eval runs — the server no longer blocks) |
 
@@ -451,7 +452,7 @@ Real course models, sim outputs compared before/after:
 8. **Regression tests are the safety net for every refactor.** 47 assertions
    over a real stdio server + real MATLAB (GBK round-trips, NaN serialization,
    ghost audits, clear-warning and progress lifecycle) made the v3 overhaul of
-   24 tools land without casualties.
+   26 tools land without casualties.
 
 ## Changelog
 
@@ -478,7 +479,18 @@ Also in v3.2 (robustness, from real long-job usage):
   AFTER the closing bracket decremented paren depth, so `f(x(end))` / `c{end}` /
   `a(k:end)` miscounted as a block `end` and rejected valid code. Tokens now
   settle before depth updates.
-- `check_static.js` version assertion is derived from the server source (shape +
+
+- **Per-instance protocol channels** — each server process now talks over
+  `req_i<pid>.json` / `res_i<pid>.json` (request carries a `reply` tag; the
+  worker polls every `req_i*.json` + legacy `req.json` and answers on the
+  requester's channel). Two ZCode sessions sharing matlab7 no longer stomp
+  each other's requests; the MATLAB worker and pidfile stay shared, and a
+  boot.lock prevents double-MATLAB cold starts.
+- **`matlab_assert` / `matlab_assert_report`** — batch grading primitive for
+  R14 (no unittest framework): record PASS/FAIL of one boolean expression per
+  call into a base-workspace log (throwing = FAIL), then collect a grouped
+  PASS/FAIL table and optionally clear. Typical loop: `matlab_run_file` a
+  student script, one assert per expected anchor value, one report at the end.- `check_static.js` version assertion is derived from the server source (shape +
   minimum), so a version bump no longer needs a test edit.
 
 The rest of the official surface is not applicable on R14 (`run_matlab_test_file`
@@ -620,7 +632,7 @@ node v3_regress.js <repo>     # full regression: real server + real R14 worker, 
 ```
 
 The regression boots a real stdio server + real MATLAB worker and runs 46
-assertions across all 24 tools (currently all passing). Requires an
+assertions across all 26 tools (currently all passing). Requires an
 interactive desktop session (window capture). `v3_smoke_window.js` tests the
 capture chain; `v3_smoke_arrange.js <model path>` tests the arrange+route
 pipeline on any Simulink model. CI (GitHub Actions) runs the static layer on

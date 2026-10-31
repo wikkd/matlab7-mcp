@@ -1,0 +1,4 @@
+{"id":1,"ok":true,"value":{"passed":true,"name":"exp5 energy anchor","got":true},"cmd":"assert"}
+{"id":2,"ok":true,"value":{"passed":false,"name":"SOC above 90 pct (expect FAIL)","got":false},"cmd":"assert"}
+{"id":3,"ok":true,"value":{"passed":false,"name":"throwing counts FAIL","error":"Undefined command/function 'undefined_fn_zz'."},"cmd":"assert"}
+{"id":4,"ok":true,"value":{"total":3,"passed":1,"cleared":true,"lines":["exp5 [PASS] exp5 energy anchor","exp7 [FAIL] SOC above 90 pct (expect FAIL)","misc [FAIL] throwing counts FAIL"]},"cmd":"assert_report"}
