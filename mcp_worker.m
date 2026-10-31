@@ -25,6 +25,7 @@ reqfile  = fullfile(pwd, reqfile);
 resfile  = fullfile(pwd, resfile);
 pidfile  = fullfile(pwd, pidfile);
 busyfile = fullfile(pwd, busyfile);
+reqdir   = pwd;   % boot dir: where all req_i*.json channels live (pinned)
 
 % Stale-file cleanup (server kills old worker before starting us)
 if exist(reqfile, 'file'),  delete(reqfile);  end
@@ -78,15 +79,17 @@ while true
         % v3.2 instance isolation: poll EVERY instance channel (req_i*.json)
         % plus the legacy req.json, oldest first (FIFO across instances).
         % Each server owns its own req file, so shared-queue write races are
-        % structurally impossible.
-        cands = [dir(fullfile(pwd, 'req_i*.json')); dir('req.json')];
+        % structurally impossible. All paths are pinned to the BOOT directory
+        % (reqdir), NOT runtime pwd: user code cd's freely and the worker
+        % must keep listening while eval'd scripts change directory.
+        cands = [dir(fullfile(reqdir, 'req_i*.json')); dir(fullfile(reqdir, 'req.json'))];
         if ~isempty(cands)
             % oldest first for FIFO fairness. R14 dir() has no datenum field
             % and no ~ output-ignoring, so order by name with a dummy first
             % output (Windows dir listing is name-ordered anyway).
             [junk, idx] = sort({cands.name}); %#ok<ASGLU>
             cands = cands(idx);
-            f1 = fullfile(pwd, cands(1).name);
+            f1 = fullfile(reqdir, cands(1).name);
             d1 = dir(f1);
             if ~isempty(d1) && d1(1).bytes >= 10
                 pause(0.05);
@@ -111,8 +114,10 @@ while true
 
     % New request: drop the previous eval's progress so matlab_progress never
     % reports stale numbers for this run (mcp_progress re-creates the file).
+    % Pinned to reqdir: after an eval cd's away, runtime pwd cleanup would
+    % miss the boot-dir progress.json (regression caught by v3_regress).
     try
-        pf = fullfile(pwd, 'progress.json');
+        pf = fullfile(reqdir, 'progress.json');
         if exist(pf, 'file'), delete(pf); end
     end
 
@@ -148,7 +153,7 @@ while true
         % Leaving? Also drop the progress file so a later worker does not
         % inherit this session's last progress numbers.
         try
-            pf = fullfile(pwd, 'progress.json');
+            pf = fullfile(reqdir, 'progress.json');
             if exist(pf, 'file'), delete(pf); end
         end
         return;
