@@ -3,7 +3,7 @@
 # matlab7-mcp
 
 **An MCP server that lets AI agents drive MATLAB 7.0 (R14, 2004) on Windows —
-23 tools, zero npm dependencies, Simulink orthogonal auto-routing & block auto-arrangement**
+24 tools, zero npm dependencies, Simulink orthogonal auto-routing & block auto-arrangement**
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
@@ -451,7 +451,7 @@ Real course models, sim outputs compared before/after:
 8. **Regression tests are the safety net for every refactor.** 47 assertions
    over a real stdio server + real MATLAB (GBK round-trips, NaN serialization,
    ghost audits, clear-warning and progress lifecycle) made the v3 overhaul of
-   23 tools land without casualties.
+   24 tools land without casualties.
 
 ## Changelog
 

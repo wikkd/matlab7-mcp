@@ -27,8 +27,8 @@ for (const f of fs.readdirSync(ROOT).filter((x) => x.endsWith('.m'))) {
 // ---- 2. tool count in server ---------------------------------------------
 const server = fs.readFileSync(path.join(ROOT, 'mcp-server.js'), 'utf8');
 const toolDefs = [...server.matchAll(/^\s*name: '(matlab_[a-z_]+)',$/gm)].map((m) => m[1]);
-check('server:23-tools', toolDefs.length === 23, `${toolDefs.length} defs`);
-check('server:version-3.1', server.includes("version: '3.1.0'"), '');
+check('server:24-tools', toolDefs.length === 24, `${toolDefs.length} defs`);
+check('server:version-3.2', server.includes("version: '3.2.0'"), '');
 check('server:dynamic-bootcount', server.includes('${TOOLS.length} tools'), '');
 const unique = new Set(toolDefs);
 check('server:unique-names', unique.size === toolDefs.length, '');
