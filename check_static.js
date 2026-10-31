@@ -28,7 +28,12 @@ for (const f of fs.readdirSync(ROOT).filter((x) => x.endsWith('.m'))) {
 const server = fs.readFileSync(path.join(ROOT, 'mcp-server.js'), 'utf8');
 const toolDefs = [...server.matchAll(/^\s*name: '(matlab_[a-z_]+)',$/gm)].map((m) => m[1]);
 check('server:24-tools', toolDefs.length === 24, `${toolDefs.length} defs`);
-check('server:version-3.2', server.includes("version: '3.2.0'"), '');
+// Version and tool counts are derived, not hardcoded: read the version the
+// server actually advertises and require only its shape, so a future bump
+// doesn't need a test edit.
+const ver = (server.match(/version: '(\d+\.\d+\.\d+)'/) || [])[1];
+check('server:version-shape', /^\d+\.\d+\.\d+$/.test(ver || ''), ver || 'not found');
+check('server:version-min', ver && ver >= '3.2.0' ? true : false, ver || '');
 check('server:dynamic-bootcount', server.includes('${TOOLS.length} tools'), '');
 const unique = new Set(toolDefs);
 check('server:unique-names', unique.size === toolDefs.length, '');

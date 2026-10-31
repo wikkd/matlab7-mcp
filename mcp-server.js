@@ -81,6 +81,8 @@ const WORK_DIR = process.env.MCP_WORK_DIR || SERVER_DIR;
 const REQ_FILE = path.join(WORK_DIR, 'req.json');
 const RES_FILE = path.join(WORK_DIR, 'res.json');
 const RES_LAST_FILE = path.join(WORK_DIR, 'res_last.json');
+const RES_HIST_FILE = path.join(WORK_DIR, 'res_history.jsonl');
+const HIST_KEEP = 20; // ring buffer size for completed-job history
 const PID_FILE = path.join(WORK_DIR, 'worker.pid');
 const BUSY_FILE = path.join(WORK_DIR, 'busy.json');
 const PROGRESS_FILE = path.join(WORK_DIR, 'progress.json');
@@ -102,6 +104,9 @@ const MATLAB_EXE = findMatlab();
 
 // ------------------------------------------------------------- MCP plumbing
 let nextId = 1;
+// id -> cmd name, recorded when the request is written so archiveRes can
+// label history entries even after the worker has cleared busy.json.
+const pendingCmd = {};
 
 process.stdin.setEncoding('utf8');
 let inBuf = '';
@@ -260,7 +265,8 @@ async function ensureWorker() {
 }
 
 /** Archive the current res.json to res_last.json (best-effort: attach the
- *  busy cmd when the worker has not cleared busy.json yet). */
+ *  busy cmd when the worker has not cleared busy.json yet) and append it to
+ *  the ring-buffer history (res_history.jsonl, newest last, HIST_KEEP kept). */
 function archiveRes() {
   try {
     const j = JSON.parse(fs.readFileSync(RES_FILE, 'utf8'));
@@ -268,7 +274,22 @@ function archiveRes() {
       const b = JSON.parse(fs.readFileSync(BUSY_FILE, 'utf8'));
       if (b && b.cmd && Number(b.id) === Number(j.id)) j.cmd = b.cmd;
     } catch {}
+    if (!j.cmd && pendingCmd[j.id] !== undefined) j.cmd = pendingCmd[j.id];
+    if (pendingCmd[j.id] !== undefined && j.ok !== undefined) delete pendingCmd[j.id];
     fs.writeFileSync(RES_LAST_FILE, JSON.stringify(j), 'utf8');
+    // Append to history (skip if this id is already the newest entry —
+    // archiveRes can run more than once for the same response).
+    let hist = [];
+    try {
+      hist = fs.readFileSync(RES_HIST_FILE, 'utf8').split('\n').filter(Boolean).map((l) => {
+        try { return JSON.parse(l); } catch { return null; }
+      }).filter(Boolean);
+    } catch {}
+    if (!hist.length || Number(hist[hist.length - 1].id) !== Number(j.id)) {
+      hist.push(j);
+      while (hist.length > HIST_KEEP) hist.shift();
+      fs.writeFileSync(RES_HIST_FILE, hist.map((e) => JSON.stringify(e)).join('\n') + '\n', 'utf8');
+    }
   } catch {}
 }
 
@@ -283,6 +304,7 @@ function archiveRes() {
 async function workerRequest(payload, timeoutSec) {
   await ensureWorker();  const id = nextId++;
   const req = JSON.stringify(Object.assign({ id }, payload));
+  pendingCmd[id] = payload.cmd || '?';
   // 1) archive + clear any previous response (matlab_last can still read it)
   archiveRes();
   try { fs.unlinkSync(RES_FILE); } catch {}
@@ -628,11 +650,20 @@ const TOOLS = [
   {
     name: 'matlab_last',
     description: 'Fetch the most recent completed worker response (cmd, ok, stdout/error). '
+      + 'Optionally pass job_id to fetch an OLDER completed job from the ring-buffer '
+      + 'history (last 20 kept, survives later tool calls), or list=true to show the '
+      + 'recent-job table (id / ok / cmd / time) without bodies. '
       + 'Use this when a long eval/run_file tool call was cut by the client-side '
       + 'timeout: the MATLAB job keeps running and its console output is archived '
       + 'here when it finishes. Long-job pattern: fire -> poll matlab_status / '
       + 'matlab_progress -> collect with matlab_last.',
-    inputSchema: { type: 'object', properties: {} },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        job_id: { type: 'number', description: 'Fetch this completed job from history instead of the newest' },
+        list: { type: 'boolean', description: 'List recent completed jobs (id, ok, cmd, finished-at)' },
+      },
+    },
   },
   {
     name: 'matlab_status',
@@ -882,13 +913,42 @@ async function callTool(name, args) {
       return textOut(`progress: ${pct}% ${msg}`.trimEnd());
     }
     case 'matlab_last': {
-      // Prefer an unclaimed res.json: if a finished job's response is still
-      // sitting there (client cut the call before the server-side promise
-      // consumed it), it IS the most recent completed output.
+      const wantList = !!(args && args.list);
+      const wantId = args && args.job_id !== undefined ? Number(args.job_id) : null;
+      // History table: id / ok / cmd / finished-at for the last HIST_KEEP jobs.
+      if (wantList) {
+        let hist = [];
+        try {
+          hist = fs.readFileSync(RES_HIST_FILE, 'utf8').split('\n').filter(Boolean).map((l) => {
+            try { return JSON.parse(l); } catch { return null; }
+          }).filter(Boolean);
+        } catch {}
+        if (!hist.length) return textOut('(no completed worker responses archived yet)');
+        const rows = hist.map((j) => `id=${j.id}  ok=${j.ok}  ${(j.cmd || '?').replace(/\s+/g, ' ').slice(0, 60)}`);
+        return textOut(`recent jobs (oldest first, ${hist.length}/${HIST_KEEP} kept):\n` + rows.join('\n'));
+      }
       let j = null;
-      try { j = JSON.parse(fs.readFileSync(RES_FILE, 'utf8')); } catch {}
-      if (!j || j.id === undefined) {
-        try { j = JSON.parse(fs.readFileSync(RES_LAST_FILE, 'utf8')); } catch {}
+      if (wantId !== null) {
+        // Fetch a specific older job from the ring-buffer history.
+        let hist = [];
+        try {
+          hist = fs.readFileSync(RES_HIST_FILE, 'utf8').split('\n').filter(Boolean).map((l) => {
+            try { return JSON.parse(l); } catch { return null; }
+          }).filter(Boolean);
+        } catch {}
+        j = hist.find((e) => Number(e.id) === wantId) || null;
+        if (!j) {
+          return textOut(`(job_id=${wantId} not in history — call matlab_last {list:true} to see kept ids, ` +
+            `or the job predates the ${HIST_KEEP}-entry ring buffer)`, true);
+        }
+      } else {
+        // Prefer an unclaimed res.json: if a finished job's response is still
+        // sitting there (client cut the call before the server-side promise
+        // consumed it), it IS the most recent completed output.
+        try { j = JSON.parse(fs.readFileSync(RES_FILE, 'utf8')); } catch {}
+        if (!j || j.id === undefined) {
+          try { j = JSON.parse(fs.readFileSync(RES_LAST_FILE, 'utf8')); } catch {}
+        }
       }
       if (!j) return textOut('(no completed worker response archived yet)');
       const head = `cmd=${j.cmd || '?'}  ok=${j.ok}  id=${j.id}`;

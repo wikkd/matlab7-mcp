@@ -205,20 +205,29 @@ switch cmd
     case 'eval'
         dtxt = [tempname, '.diary'];
         [good, txt] = eval_capture(req.code, dtxt, '');
-        % v3: warn when user code contains a bare clear/clear all - it wipes
-        % the caller's loop variables too (classic "Reference to a cleared
-        % variable" failure seen with eval'd scripts in for-loops).
-        % NOTE: bare clear/clear all always makes the eval FAIL (good=false),
-        % so the warning is attached when the code matches, regardless of ok.
-        hasClearWarn = ~isempty(strfind(req.code, 'clear all')) || ...
-            ~isempty(regexpi(req.code, '(^|[\n;,])\s*clear\s*([;,\n]|$)'));
-        if hasClearWarn
-            txt = [txt, char(10), ...
-                'NOTE: code contains bare "clear"/"clear all" - it also wipes loop ', ...
-                'variables and workspace data. Use "clear <name>" or clear(''vars'') selectively.'];
+        % v3.2: on failure with console output, append the diary tail (last
+        % 30 lines) to the error so one call shows both the error and the
+        % console context that led to it - no follow-up eval needed.
+        if ~good && ~isempty(strtrim(txt))
+            resp = ['{"id":' num2str(req.id) ',"ok":' bool2str(good) ...
+                ',"stdout":' jstr(txt) ...
+                ',"error":' jstr(['(console tail, last 30 lines)' char(10) diary_tail(txt, 30)]) '}'];
+        else
+            % v3: warn when user code contains a bare clear/clear all - it wipes
+            % the caller's loop variables too (classic "Reference to a cleared
+            % variable" failure seen with eval'd scripts in for-loops).
+            % NOTE: bare clear/clear all always makes the eval FAIL (good=false),
+            % so the warning is attached when the code matches, regardless of ok.
+            hasClearWarn = ~isempty(strfind(req.code, 'clear all')) || ...
+                ~isempty(regexpi(req.code, '(^|[\n;,])\s*clear\s*([;,\n]|$)'));
+            if hasClearWarn
+                txt = [txt, char(10), ...
+                    'NOTE: code contains bare "clear"/"clear all" - it also wipes loop ', ...
+                    'variables and workspace data. Use "clear <name>" or clear(''vars'') selectively.'];
+            end
+            resp = ['{"id":' num2str(req.id) ',"ok":' bool2str(good) ...
+                ',"stdout":' jstr(txt) '}'];
         end
-        resp = ['{"id":' num2str(req.id) ',"ok":' bool2str(good) ...
-            ',"stdout":' jstr(txt) '}'];
 
     case 'run_file'
         % Run a .m file: fresh (clear cached function by name), auto cd into
@@ -631,6 +640,54 @@ if ~syntax_ok
     end
 elseif marker ~= 0
     good = false;
+end
+end
+
+% ------------------------------------------------------------------
+function tail = diary_tail(txt, want)
+% Last `want` lines of a diary string (R14-safe: index loop, no strsplit).
+% Collapses blank runs so the tail carries maximum context in minimum bytes.
+if isempty(txt)
+    tail = '';
+    return;
+end
+NL = char(10);
+lines = cell(1, 1);
+pos = 1;
+n = 0;
+while pos <= numel(txt)
+    nl = strfind(txt(pos:end), NL);
+    if isempty(nl)
+        chunk = txt(pos:end);
+        pos = numel(txt) + 1;
+    else
+        chunk = txt(pos:pos + nl(1) - 1);
+        pos = pos + nl(1);
+    end
+    n = n + 1;
+    if n > numel(lines)
+        lines{end + 1} = '';  %#ok<AGROW>
+    end
+    lines{n} = chunk;
+end
+% collapse consecutive blank lines
+keep = zeros(1, n);
+nk = 0;
+prevBlank = true;  % suppress leading blanks
+for k = 1:n
+    blank = isempty(strtrim(lines{k}));
+    if ~(blank && prevBlank)
+        nk = nk + 1;
+        keep(nk) = k;
+    end
+    prevBlank = blank;
+end
+lines = lines(keep(1:nk));
+n = nk;
+if n <= want
+    tail = strjoin_r14(lines, NL);
+else
+    tail = strjoin_r14(lines(n - want + 1:end), NL);
 end
 end
 

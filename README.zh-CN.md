@@ -151,7 +151,7 @@ AI 部署完成后，重启 MCP 客户端，说一句"列出我的 MATLAB worksp
 | `matlab_check` | 语法检查不运行：块关键字配平 + pcode 全量解析 |
 | `matlab_run_file` | 运行 `.m` 文件（自动 clear 该函数缓存、恢复工作目录） |
 | `matlab_status` / `matlab_restart` | worker 状态（含 busy 命令与已耗时）/ 重启 |
-| `matlab_last` | 最近一次已完成任务的输出——抢救被客户端超时切断的 eval 的控制台文本 |
+| `matlab_last` | 最近一次已完成任务的输出——抢救被客户端超时切断的 eval 的控制台文本；`job_id` 从 20 条历史中取回更早任务，`list` 列出最近任务表 |
 | `matlab_progress` | 读回最近一次 eval 里 `mcp_progress(frac, msg)` 的打点（v3.1 起可边跑边轮询——server 不再阻塞） |
 
 **数据与文件**
@@ -268,6 +268,14 @@ Sugiyama 式分层布局：① 从**目标侧**枚举边（分支边只有从 In
 |---|---|
 | `model_scan` — 不加载模型、在磁盘上正则搜索已保存模型 | `matlab_sim_scan`：R14 .mdl 是纯文本，磁盘搜索连模型加载都不需要——坏到打不开的模型也能搜；传目录则搜该目录全部 .mdl |
 | `model_check` 的未连端口 / 悬空线检测 | `matlab_sim_info` 现在同时审计未连接的**输出**端口（此前只有输入）与悬空线尾（源正常、目标悬空）；报告新增 `nUnconnSrc` / `nDanglingTails` |
+
+
+v3.2 同批 robustness 改进（来自长任务实战）：
+
+- **任务历史环形缓冲**——每个完成的 worker 响应追加进 `res_history.jsonl`（保留最近 20 条）。`matlab_last` 新增 `job_id` 取回更早任务（此前一次后续调用会永久覆盖超时任务的输出）、`list` 列出最近任务表。
+- **eval 出错带控制台上下文**——失败 eval 的 `error` 自动附 diary 尾巴（末 30 行），一次调用同时看到"错在哪 + 之前发生了什么"。
+- **`mcp_check` 索引 `end` 修复**——块平衡扫描器在闭括号减深度**之后**才结算词元，导致 `f(x(end))` / `c{end}` / `a(k:end)` 被误判为块 `end` 而拒掉合法代码。现在词元先结算、深度后更新。
+- `check_static.js` 的版本断言改为从 server 源码派生（格式+最低版本），升版本不再需要改测试。
 
 其余官方接口在 R14 上不适用（`run_matlab_test_file` 依赖单元测试框架、共享会话需 R2023a+），不补。
 

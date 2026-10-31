@@ -68,6 +68,22 @@ pdepth = 0;
 scrub2 = [lower(scrub), ' '];
 for i3 = 1:numel(scrub2)
     ch = scrub2(i3);
+    % flush a pending word BEFORE depth updates: the token 'end' in f(x(end))
+    % or c{end} must be judged at its own depth, not after the closing
+    % bracket has already decremented it (classic off-by-one, v3.2 fix).
+    isword = (ch >= 'a' && ch <= 'z') || ch == '_';
+    if ~isword && wstart > 0
+        w = scrub2(wstart:i3-1);
+        if pdepth == 0
+            if strcmp(w, 'for') || strcmp(w, 'while') || strcmp(w, 'if') ...
+                    || strcmp(w, 'switch') || strcmp(w, 'try') || strcmp(w, 'function')
+                openers = openers + 1;
+            elseif strcmp(w, 'end')
+                enders = enders + 1;
+            end
+        end
+        wstart = -1;
+    end
     if ch == '(' || ch == '{' || ch == '['
         pdepth = pdepth + 1;
     elseif ch == ')' || ch == '}' || ch == ']'
@@ -75,22 +91,8 @@ for i3 = 1:numel(scrub2)
             pdepth = pdepth - 1;
         end
     end
-    isword = (ch >= 'a' && ch <= 'z') || ch == '_';
     if isword
         if wstart < 0, wstart = i3; end
-    else
-        if wstart > 0
-            w = scrub2(wstart:i3-1);
-            if pdepth == 0
-                if strcmp(w, 'for') || strcmp(w, 'while') || strcmp(w, 'if') ...
-                        || strcmp(w, 'switch') || strcmp(w, 'try') || strcmp(w, 'function')
-                    openers = openers + 1;
-                elseif strcmp(w, 'end')
-                    enders = enders + 1;
-                end
-            end
-            wstart = -1;
-        end
     end
 end
 if openers ~= enders

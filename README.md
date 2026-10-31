@@ -166,7 +166,7 @@ After the agent finishes, restart your MCP client and try
 | `matlab_check` | Syntax-check without running: block-keyword balance + full pcode parse |
 | `matlab_run_file` | Run a `.m` file (auto-clears its function cache, restores cwd) |
 | `matlab_status` / `matlab_restart` | Worker status (incl. busy command + elapsed seconds) / restart |
-| `matlab_last` | Output of the most recent completed job — rescues console text of evals whose tool call was cut by a client timeout |
+| `matlab_last` | Output of the most recent completed job — rescues console text of evals whose tool call was cut by a client timeout; `job_id` fetches an older job from the 20-entry history, `list` shows the recent-job table |
 | `matlab_progress` | Read `mcp_progress(frac, msg)` markers from the last eval (v3.1: pollable WHILE the eval runs — the server no longer blocks) |
 
 **Data & files**
@@ -464,6 +464,22 @@ Compared against the official `matlab/matlab-mcp-server` + `simulink-agentic-too
 |---|---|
 | `model_scan` — regex-search a saved model on disk without loading it | `matlab_sim_scan`: R14 .mdl is plain text, so the disk search needs no model load at all — also works on models too broken to load. Pass a folder to scan every .mdl in it |
 | `model_check`'s unconnected-port / dangling-line detection | `matlab_sim_info` now also audits unconnected OUTPUT ports (not just inputs) and dangling line tails (source ok, destination floats); report gains `nUnconnSrc` / `nDanglingTails` |
+
+
+Also in v3.2 (robustness, from real long-job usage):
+
+- **Job history ring buffer** — every completed worker response is appended to
+  `res_history.jsonl` (last 20 kept). `matlab_last` accepts `job_id` to fetch an
+  older job (previously one follow-up tool call could permanently overwrite a
+  timed-out job's output) and `list` to show the recent-job table.
+- **eval errors carry console context** — a failed eval's `error` now includes
+  the diary tail (last 30 lines), so one call shows the error AND what led to it.
+- **`mcp_check` index-`end` fix** — the block-balance scanner settled word tokens
+  AFTER the closing bracket decremented paren depth, so `f(x(end))` / `c{end}` /
+  `a(k:end)` miscounted as a block `end` and rejected valid code. Tokens now
+  settle before depth updates.
+- `check_static.js` version assertion is derived from the server source (shape +
+  minimum), so a version bump no longer needs a test edit.
 
 The rest of the official surface is not applicable on R14 (`run_matlab_test_file`
 needs matlab.unittest, `shareMATLABSession` needs the engine API) or is something
