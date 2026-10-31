@@ -222,3 +222,27 @@ Bugs found during bring-up, all instructive:
    inflated rect = blocked) or A* proposes edges the verifier rejects.
 5. The catch handler must capture `lasterr` BEFORE any other failing call
    — inner errors overwrite it and mask the real cause.
+
+## 11. v6 addendum (2026-10-31, layout day)
+
+Re-laying EV_Energy_Range exposed two more emit-side laws and one
+pattern-side hole, all fixed the same day (see README rule 11 / law 12):
+
+1. R14's vertical-entry tail rewrite (`(dx, dy∓5)`, law 12) sheared every
+   A\* proposal whose goal sat on a horizontal rung — all vertEntry A\*
+   attempts died "sheared on emit" and the patterns took over. Fix: the
+   emitter pre-applies the rewrite (appends the explicit vertical
+   `(dx, dy∓5)` tail). Side effect: EV_Drag_Power −84 px, Exp7 −574 px vs
+   v5.
+2. The go-around pattern's final descent `(X2, cyTry)→(X2, dy)` was never
+   obstacle-checked (pattern acceptance = orthogonality only); for
+   vertical entries X2 == dx rides the dst block column, so wrong-side
+   channels pierced the block. Two such wires then hard-blocked each
+   other's stale segments — a second route pass stopped healing them.
+   Fix: block check on the descent, leaving the last 12 px before the
+   port unchecked (margin zone by design), plus outside-side-only goals.
+3. Sum/Constant blocks reject `NameLocation` — their printed names sit in
+   the fixed bottom band that IS the approach corridor of a bottom-fed
+   port. Not routable around; the metrics exempt the own-label-on-tail
+   class, and blocks that DO accept NameLocation get their labels moved
+   aside pre-route.

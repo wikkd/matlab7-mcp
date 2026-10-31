@@ -9,7 +9,7 @@ load_system(model);
 % ---- blocks, labels (Java font metrics, same math the router uses) ----
 blks = find_system(model, 'SearchDepth', 1, 'Type', 'block');
 n = length(blks);
-Rb = zeros(n, 4); LR = -1e9 * ones(n, 4); nms = cell(n, 1);
+Rb = zeros(n, 4); LR = -1e9 * ones(n, 4); nms = cell(n, 1); bh = zeros(n, 1);
 jfm = [];
 try
     jtk = java.awt.Toolkit.getDefaultToolkit;
@@ -22,6 +22,7 @@ for i = 1:n
     p = get_param(blks{i}, 'Position');
     Rb(i, :) = p;
     nms{i} = get_param(blks{i}, 'Name');
+    try, bh(i) = get_param(blks{i}, 'Handle'); catch, bh(i) = -1; end
     xmin = min(xmin, p(1)); ymin = min(ymin, p(2));
     xmax = max(xmax, p(3)); ymax = max(ymax, p(4));
     loc = 'bottom';
@@ -42,7 +43,8 @@ end
 % ---- lines: segments with family + owning line ----
 L = get_param(model, 'Lines');
 hs = find_system(model, 'SearchDepth', 1, 'FindAll', 'on', 'Type', 'line');
-seg = []; segFam = []; segLn = [];
+seg = []; segFam = []; segLn = []; segIdx = [];
+lastSeg = zeros(size(L, 1), 1);
 totLen = 0; totBend = 0; nDiag = 0; nOut = 0; outList = [];
 det = zeros(size(L, 1), 2);   % [len, manhattan] per line row
 for i = 1:size(L, 1)
@@ -74,6 +76,8 @@ for i = 1:size(L, 1)
         seg = [seg; P(j-1,1) P(j-1,2) P(j,1) P(j,2)];  %#ok<AGROW>
         segFam = [segFam; fam];                        %#ok<AGROW>
         segLn = [segLn; i];                            %#ok<AGROW>
+        segIdx = [segIdx; j-1];                        %#ok<AGROW>
+        lastSeg(i) = j - 1;                            %#ok<AGROW>
     end
     man = abs(P(end,1)-P(1,1)) + abs(P(end,2)-P(1,2));
     det(i, :) = [len, max(man, 1)];
@@ -128,11 +132,22 @@ for a = 1:size(seg, 1)
 end
 
 % ---- block / label hits ----
+% Segments 1-2 of each line are the R14-mandated exit-stub pair (rewritten
+% by R14 itself after every set; hidden under the port arrow) -- exempt.
+% The LAST segment grazing its OWN destination block's LABEL is exempt:
+% R14 prints Sum/Constant names (no NameLocation parameter) in a fixed
+% band that is the mandatory approach corridor of a vertical-entry port.
+% Own BLOCK-body hits on the tail are still counted (real defects).
 nBlk = 0; nLab = 0; hitTxt = '';
 for s = 1:size(seg, 1)
+    if segIdx(s) <= 2, continue; end
     for i = 1:n
         for which = 1:2
             if which == 1, q = Rb(i, :); else, q = LR(i, :); end
+            if which == 2 && segIdx(s) == lastSeg(segLn(s)) && ...
+                    bh(i) == L(segLn(s)).DstBlock(1)
+                continue;   % own label in the mandatory approach corridor
+            end
             if abs(seg(s,2) - seg(s,4)) < 0.5
                 yy = seg(s,2);
                 if yy >= q(2)-0.5 && yy <= q(4)+0.5 && ...

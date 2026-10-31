@@ -131,6 +131,48 @@ if ~isempty(R)
     R(:, 4) = R(:, 4) + margin;
 end
 
+% ------------- v6: relocate labels off vertical-entry corridors ------
+% A block whose input port sits on its top/bottom edge can only be wired
+% from that outer side; a name printed on the same side sits exactly in
+% the mandatory approach corridor (R14 prints bottom labels 1..15 px below
+% the body). Move such names to the left side BEFORE routing so no wire
+% ever has to cross its own label.
+for b = 1:numel(allPaths)
+    p = allPaths{b};
+    if strcmp(p, model), continue; end
+    try
+        get_param(p, 'BlockType');
+        lhv = get_param(p, 'LineHandles');
+        rv = get_param(p, 'Position');
+        locv = get_param(p, 'NameLocation');
+    catch
+        continue;
+    end
+    if ~any(strcmp(locv, {'bottom', 'top'})), continue; end
+    entrySide = 0;   % +1 bottom edge, -1 top edge
+    for s = 1:numel(lhv.Inport)
+        hLine = lhv.Inport(s);
+        if hLine == -1 || hLine == 0, continue; end
+        try
+            ppv = get_param(hLine, 'DstPortHandle');
+            if isempty(ppv) || ppv(1) == -1, continue; end
+            dposv = get_param(ppv(1), 'Position');
+        catch
+            continue;
+        end
+        if abs(dposv(2) - rv(4)) <= 1
+            entrySide = 1;
+        elseif abs(dposv(2) - rv(2)) <= 1
+            entrySide = -1;
+        end
+    end
+    if entrySide == 1 && strcmp(locv, 'bottom')
+        set_param(p, 'NameLocation', 'left');
+    elseif entrySide == -1 && strcmp(locv, 'top')
+        set_param(p, 'NameLocation', 'left');
+    end
+end
+
 % ---------------- name-label text rects ----------------
 labelFontOK = false;
 jfm = [];
@@ -142,6 +184,7 @@ try
 catch
 end
 labelR = zeros(0, 4);
+labelPath = {};
 for b = 1:numel(allPaths)
     p = allPaths{b};
     try
@@ -175,6 +218,7 @@ for b = 1:numel(allPaths)
             lr = [cx - tw/2, r(4) + 1, cx + tw/2, r(4) + th + 1];
     end
     labelR(end+1, :) = round(lr); %#ok<AGROW>
+    labelPath{end+1} = p; %#ok<AGROW>
 end
 Rfull = [R; labelR];
 
@@ -470,6 +514,137 @@ for sweep = 1:2
 end
 nSuper1 = wire_count_super(wireA, wireFam, wireLine, wireOrd, wireLast);
 
+% ---------------- pass 5: label-repair (v6) ----------------
+% A routed wire grazing a block name means the name sits in a corridor.
+% Flip the name to the free side (guarding against the side a vertical
+% entry needs), rebuild the label rects, and re-route only the grazing
+% lines. Two rounds max; whatever still grazes is reported honestly.
+nLabFix = 0;
+for round5 = 1:2
+    hitLbl = [];
+    hitRec = [];
+    for li = 1:size(labelR, 1)
+        lr5 = labelR(li, :);
+        for r5 = 1:numel(recs)
+            P5 = get_param(recs{r5}{1}, 'Points');
+            if size(P5, 1) < 2, continue; end
+            hit5 = false;
+            for j5 = 3:size(P5, 1)   % skip the R14 exit-stub pair (j=1,2)
+                if abs(P5(j5,2) - P5(j5-1,2)) < 0.5
+                    yy5 = P5(j5,2);
+                    if yy5 >= lr5(2)-0.5 && yy5 <= lr5(4)+0.5 && ...
+                       max(P5(j5,1), P5(j5-1,1)) > lr5(1)+0.5 && ...
+                       min(P5(j5,1), P5(j5-1,1)) < lr5(3)-0.5
+                        hit5 = true;
+                    end
+                else
+                    xx5 = P5(j5,1);
+                    if xx5 >= lr5(1)-0.5 && xx5 <= lr5(3)+0.5 && ...
+                       max(P5(j5,2), P5(j5-1,2)) > lr5(2)+0.5 && ...
+                       min(P5(j5,2), P5(j5-1,2)) < lr5(4)-0.5
+                        hit5 = true;
+                    end
+                end
+                if hit5
+                    if isempty(find(hitLbl == li & hitRec == r5, 1))
+                        hitLbl(end+1) = li; %#ok<AGROW>
+                        hitRec(end+1) = r5; %#ok<AGROW>
+                    end
+                    break;
+                end
+            end
+        end
+    end
+    if isempty(hitLbl)
+        break;
+    end
+    % flip each hit label once (same side-guard as the pre-pass)
+    uLbl = unique(hitLbl);
+    flippedAny = false;
+    for t5 = 1:numel(uLbl)
+        li = uLbl(t5);
+        p5 = labelPath{li};
+        try
+            loc5 = get_param(p5, 'NameLocation');
+            rv5 = get_param(p5, 'Position');
+            lhv5 = get_param(p5, 'LineHandles');
+            entrySide = 0;
+            for s5 = 1:numel(lhv5.Inport)
+                hLine5 = lhv5.Inport(s5);
+                if hLine5 == -1 || hLine5 == 0, continue; end
+                try
+                    ppv5 = get_param(hLine5, 'DstPortHandle');
+                    if isempty(ppv5) || ppv5(1) == -1, continue; end
+                    dpos5 = get_param(ppv5(1), 'Position');
+                catch
+                    continue;
+                end
+                if abs(dpos5(2) - rv5(4)) <= 1
+                    entrySide = 1;
+                elseif abs(dpos5(2) - rv5(2)) <= 1
+                    entrySide = -1;
+                end
+            end
+            newLoc = '';
+            if strcmp(loc5, 'bottom') && entrySide ~= -1
+                newLoc = 'top';
+            elseif strcmp(loc5, 'top') && entrySide ~= 1
+                newLoc = 'bottom';
+            elseif any(strcmp(loc5, {'bottom', 'top'}))
+                newLoc = 'left';
+            end
+            if ~isempty(newLoc)
+                set_param(p5, 'NameLocation', newLoc);
+                nLabFix = nLabFix + 1;
+                flippedAny = true;
+            end
+        catch
+        end
+    end
+    if ~flippedAny
+        break;
+    end
+    % rebuild label rects (cheap) and re-route only the grazing lines
+    labelR = zeros(0, 4);
+    for b5 = 1:numel(labelPath)
+        p5 = labelPath{b5};
+        try
+            nm5 = get_param(p5, 'Name');
+            r5b = get_param(p5, 'Position');
+            loc5b = get_param(p5, 'NameLocation');
+        catch
+            continue;
+        end
+        cx5 = (r5b(1) + r5b(3)) / 2;
+        cy5 = (r5b(2) + r5b(4)) / 2;
+        if labelFontOK
+            tw5 = jfm.stringWidth(nm5) + 8;
+        else
+            tw5 = 6 * length(nm5) + 10;
+        end
+        switch loc5b
+            case 'top'
+                lr5b = [cx5 - tw5/2, r5b(2) - 15, cx5 + tw5/2, r5b(2) - 1];
+            case 'left'
+                lr5b = [r5b(1) - tw5 - 1, cy5 - 7, r5b(1) - 1, cy5 + 7];
+            case 'right'
+                lr5b = [r5b(3) + 1, cy5 - 7, r5b(3) + tw5 + 1, cy5 + 7];
+            otherwise
+                lr5b = [cx5 - tw5/2, r5b(4) + 1, cx5 + tw5/2, r5b(4) + 15];
+        end
+        labelR(end+1, :) = round(lr5b); %#ok<AGROW>
+    end
+    Rfull = [R; labelR];
+    uRec = unique(hitRec);
+    for t5 = 1:numel(uRec)
+        r5 = uRec(t5);
+        route_one(recs{r5}{1}, recs{r5}{2}, Rfull, R, spacing, ...
+                  recs{r5}{3}, wireA, wireFam, [], [], aopts);
+        [wireA, wireFam, wireLine, wireOrd, wireLast] = wire_add(wireA, ...
+            wireFam, wireLine, wireOrd, wireLast, recs{r5}{1});
+    end
+end
+
 try
     save_system(model);
 end
@@ -478,7 +653,7 @@ report = struct('model', model, 'routed', nrouted, 'kept', nkept, ...
     'failed', nfailed, 'ghost_lines', ndedup, ...
     'label_obstacles', size(labelR, 1), 'junctions', njunc, ...
     'super_before', nSuper0, 'super_after', nSuper1, 'nudged', nNudged, ...
-    'details', {details});
+    'label_fixes', nLabFix, 'details', {details});
 end
 
 % ======================================================================
@@ -552,6 +727,11 @@ try
     % straight when R14's own canonical form is a clear same-row run
     if abs(sy - dy) < 0.5 && size(Pp, 1) <= 3 && ...
             ~seg_blocked_h(sx, dx, sy, R)
+        global DBGLOG
+        if isa(DBGLOG, 'cell')
+            DBGLOG{end+1} = sprintf('(%d,%d)->(%d,%d) ex=%d trunk=%d via straight', ...
+                sx, sy, dx, dy, ex, isTrunk); %#ok<AGROW>
+        end
         ok = true;
         msg = 'straight';
         return;
@@ -568,6 +748,11 @@ try
         ASTARMSGS{end+1} = msgA; %#ok<AGROW>
     end
     if okA
+        global DBGLOG
+        if isa(DBGLOG, 'cell')
+            DBGLOG{end+1} = sprintf('(%d,%d)->(%d,%d) ex=%d trunk=%d via astar', ...
+                sx, sy, dx, dy, ex, isTrunk); %#ok<AGROW>
+        end
         ok = true;
         msg = '';
         return;
@@ -652,6 +837,11 @@ try
             end
             chosen = [];
         else
+            global DBGLOG
+            if isa(DBGLOG, 'cell')
+                DBGLOG{end+1} = sprintf('(%d,%d)->(%d,%d) ex=%d trunk=%d via safez cx=%d', ...
+                    sx, sy, dx, dy, ex, isTrunk, cx); %#ok<AGROW>
+            end
             ok = true;
             msg = '';
             return;
@@ -667,6 +857,25 @@ try
             if cy2 == sy, continue; end
             laneList(end+1) = cy2; %#ok<AGROW>
         end
+        % vertical-entry side: +1 bottom edge, -1 top edge, 0 unknown. A
+        % vertical port can ONLY be entered from its outer side, so offer
+        % lanes there too (the sy->dy lanes are all on the inner side).
+        sideV = 0;
+        try
+            dblk = get_param(dstPort, 'Parent');
+            dbpos = get_param(dblk, 'Position');
+            if abs(dy - dbpos(4)) <= 1
+                sideV = 1;
+            elseif abs(dy - dbpos(2)) <= 1
+                sideV = -1;
+            end
+        catch
+        end
+        if sideV ~= 0
+            for s6 = 1:5
+                laneList(end+1) = dy + s6 * 10 * sideV; %#ok<AGROW>
+            end
+        end
         laneList = cands_keep(laneList, softY, hardBanY);
         laneY = 0;
         for t5 = 1:numel(laneList)
@@ -675,18 +884,37 @@ try
                 continue;
             end
             if seg_blocked_v(sy, cy2, sx, R), continue; end
-            if seg_blocked_v(cy2, dy, dx, R), continue; end
+            if ex < dx - 0.5
+                if seg_blocked_v(cy2, dy, dx, R), continue; end
+            else
+                % vertical entry: the descent rides the dst block column,
+                % so check it but leave the last 12 px before the port
+                % unchecked (margin zone by design -- R14 rewrites the
+                % tail to (dx, dy -/+ 5) there); a full-span check would
+                % also reject correct-side approaches.
+                if cy2 < dy
+                    vLo = cy2; vHi = dy - 12;
+                else
+                    vLo = dy + 12; vHi = cy2;
+                end
+                if vHi > vLo && seg_blocked_v(vLo, vHi, dx, R), continue; end
+            end
             laneY = cy2;
             break;
         end
-        if laneY ~= 0 && ex < dx - 0.5
-            % real canonical elbow discovered: the descent may leave it,
-            % but the stored tail must still END at (ex, dy) -- R14 rewrites
-            % the last point to the canonical elbow otherwise (shear).
-            X2 = ex_pick(wireA, wireFam, myFam, ex, laneY, dy, R);
-            if isempty(X2) || seg_blocked_h(min(sx, X2), max(sx, X2), ...
-                    laneY, R)
-                laneY = 0;   % every entry column blocked; try go-around
+        if laneY ~= 0
+            if ex < dx - 0.5
+                % real canonical elbow discovered: the descent may leave it,
+                % but the stored tail must still END at (ex, dy) -- R14
+                % rewrites the last point to the canonical elbow otherwise
+                % (shear).
+                X2 = ex_pick(wireA, wireFam, myFam, ex, laneY, dy, R);
+                if isempty(X2) || seg_blocked_h(min(sx, X2), max(sx, X2), ...
+                        laneY, R)
+                    laneY = 0;   % every entry column blocked; try go-around
+                end
+            else
+                X2 = ex;   % vertical-entry port: descent must stay at dx
             end
         end
         if laneY ~= 0
@@ -695,6 +923,12 @@ try
             set_param(lineH, 'Points', P);
             Pr = get_param(lineH, 'Points');
             if all_orthogonal(Pr)
+                global DBGLOG
+                if isa(DBGLOG, 'cell')
+                    DBGLOG{end+1} = sprintf('(%d,%d)->(%d,%d) ex=%d trunk=%d via anchor laneY=%d X2=%d blkH=%d', ...
+                        sx, sy, dx, dy, ex, isTrunk, laneY, X2, ...
+                        seg_blocked_h(min(sx, dx), max(sx, dx), laneY, R)); %#ok<AGROW>
+                end
                 ok = true;
                 msg = '';
                 return;
@@ -740,7 +974,7 @@ try
                      laneUp + 50, laneDn - 50, laneUp + 75, laneDn - 75];
         laneCands = cands_keep(laneCands, softY, hardBanY);
         global DBGR gaRow gaCxg gaX2 gaExt gaSet gaLast
-        gaRow = 0; gaCxg = 0; gaX2 = 0; gaExt = 0; gaSet = 0; gaLast = 0;
+        gaRow = 0; gaCxg = 0; gaX2 = 0; gaExt = 0; gaLeg = 0; gaSet = 0; gaLast = 0;
         for lc = 1:numel(laneCands)
             cyTry = laneCands(lc);
             if isempty(cyTry), continue; end
@@ -777,6 +1011,22 @@ try
                 gaX2 = gaX2 + 1;
                 continue;
             end
+            % final descent (X2, cyTry -> dy): for vertical entries X2 == dx
+            % rides the dst block column, so a channel on the wrong side of
+            % the port would pierce the block body (the bug that drew wires
+            % straight through Sum blocks). Check the leg but leave the last
+            % 12 px before the port unchecked (margin zone by design -- R14
+            % rewrites the tail to (dx, dy -/+ 5) there).
+            if cyTry < dy
+                vLo = cyTry; vHi = dy - 12;
+            else
+                vLo = dy + 12; vHi = cyTry;
+            end
+            if vHi > vLo && seg_blocked_v(vLo, vHi, X2, R)
+                gaLeg = gaLeg + 1;
+                gaLast = cyTry;
+                continue;
+            end
             if seg_blocked_h(min([sx, dx, X2 - 8]), ...
                     max([sx, dx, X2 - 8]), cyTry, R)
                 gaExt = gaExt + 1;
@@ -793,6 +1043,20 @@ try
             set_param(lineH, 'Points', P);
             Pr = get_param(lineH, 'Points');
             if all_orthogonal(Pr)
+                global DBGLOG
+                if isa(DBGLOG, 'cell')
+                    hits = '';
+                    for rk = 1:size(R, 1)
+                        if cyTry >= R(rk,2) && cyTry <= R(rk,4) && ...
+                                245 >= R(rk,1) - 0.5
+                            hits = [hits sprintf('[%d %d %d %d]', ...
+                                R(rk,1), R(rk,2), R(rk,3), R(rk,4))]; %#ok<AGROW>
+                        end
+                    end
+                    DBGLOG{end+1} = sprintf('(%d,%d)->(%d,%d) ex=%d trunk=%d via goaround cyTry=%d X2=%d nR=%d yhit=%d %s', ...
+                        sx, sy, dx, dy, ex, isTrunk, cyTry, X2, size(R,1), ...
+                        seg_blocked_h(sx, dx, cyTry, R), hits); %#ok<AGROW>
+                end
                 ok = true;
                 msg = '';
                 return;
@@ -1308,6 +1572,20 @@ try
     if vertEntry
         gi = find(abs(xs - dx) < 0.5, 1);
         gjs = find(abs(ys - dy) <= 20.5 & abs(ys - dy) > 0.5);
+        % restrict the goals to the OUTSIDE side of the dst block: a
+        % vertical port can only be entered from its outer side; inner-side
+        % goal cells sit inside the block and can only be "reached" by a
+        % piercing path.
+        try
+            dblk = get_param(dstPort, 'Parent');
+            dbpos = get_param(dblk, 'Position');
+            if abs(dy - dbpos(4)) <= 1
+                gjs = find(abs(ys - dy) <= 20.5 & ys > dy);
+            elseif abs(dy - dbpos(2)) <= 1
+                gjs = find(abs(ys - dy) <= 20.5 & ys < dy);
+            end
+        catch
+        end
         if isempty(gi) || isempty(gjs)
             msg = 'astar: no goal node';
             return;
@@ -1405,6 +1683,14 @@ try
         end
     end
     pts(end+1, :) = [xs(nodes(end,1)), ys(nodes(end,2))]; %#ok<AGROW>
+    % vertical-entry tail: pre-apply R14's own rewrite (law: the stored tail
+    % lands at (dx, dy -/+ 5)). Without this, R14 shifts the proposed goal
+    % point 5 px off a horizontal rung and shears a diagonal -- the reason
+    % vertEntry A* attempts used to die with "sheared on emit".
+    if vertEntry
+        gy = ys(nodes(end, 2));
+        pts(end+1, :) = [gx, dy + 5 * sign(gy - dy)]; %#ok<AGROW>
+    end
     P = dedup_pts(pts);
     set_param(lineH, 'Points', P);
     Pr = get_param(lineH, 'Points');

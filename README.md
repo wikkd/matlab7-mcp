@@ -317,6 +317,27 @@ junctions"):
     length 10978→**10512**, bends 62→**56**, worst detour 2.7→**1.3**,
     baseline's 4 residual defects → 0. Runtime ≤ 10 s/model; sim anchors
     bit-identical.
+11. **Block auto-layout (v6, `mcp_sim_arrange`)** — the tall-single-column
+    defect: cycle members used to be flattened onto their shallowest
+    feeder's layer, piling whole feedback chains (EV_Energy_Range's SOC +
+    distance loops = 16 blocks) into ONE column. v6 finds SCCs (Kosaraju),
+    cuts exactly ONE edge per SCC — choosing the combination that minimizes
+    total edge span over all cut combos (cut edges are still wires, so
+    their span is scored) — then runs plain Kahn longest-path; barycenter
+    sweeps are now down-down-up-down. The loop chains spread horizontally
+    and the wrap wires land where a human would draw them (3-column wrap on
+    EV_Energy_Range). Router support shipped with it: a go-around-pattern
+    hole let vertical-entry wires pierce the dst block from the wrong side
+    (two such wires then dead-locked on each other's stale segments — a
+    second route pass no longer healed them); fixed with a pullback-12px
+    block check on the final descent, goals restricted to the port's outer
+    side, and the law-12 tail pre-applied in the A\* emit (kills the
+    "sheared on emit" class for vertical entries — EV_Drag_Power length
+    2127→**2043**, Exp7 9432→**8858**). Labels: blocks with vertical
+    entries get their names pre-moved to the side where possible, routed
+    wires grazing an immovable name are reported by the metrics (own-label
+    approach corridor = R14-unfixable, exempt); EV_Energy_Range re-laid at
+    xgap 110 / ygap 55: **all metrics zero, sim anchors bit-identical**.
 
 ### Verified results
 
@@ -368,12 +389,22 @@ Real course models, sim outputs compared before/after:
    (R14 rejects chained static calls — two steps) and assume below-block
    placement.
 11. **R14 rewrites the LAST stored point of any set shape to the canonical
-   elbow `(dst_x-10, dst_y)`** (not just bare trunks — law 2 generalizes):
-   a shape whose descent leaves the canonical column must still end
-   `...;(X,dy);(dx-10,dy)` explicitly, else the rewrite shears a diagonal.
-   The elbow is discovered by the bare `[P0;dp]` probe; after a failed set
-   the learned value is polluted (`Pr(end,1)` = dst), so re-probe rather
-   than accumulate.
+    elbow `(dst_x-10, dst_y)`** (not just bare trunks — law 2 generalizes):
+    a shape whose descent leaves the canonical column must still end
+    `...;(X,dy);(dx-10,dy)` explicitly, else the rewrite shears a diagonal.
+    The elbow is discovered by the bare `[P0;dp]` probe; after a failed set
+    the learned value is polluted (`Pr(end,1)` = dst), so re-probe rather
+    than accumulate.
+12. **Vertical-entry tails are rewritten to `(dst_x, dst_y -/+ 5)`** — the
+    5 px band outside the block edge on the approach side. A proposed tail
+    sitting further out (`dy±10/20`) gets pulled in; if the second-to-last
+    point is a horizontal rung's end, the 5 px shift shears a diagonal
+    ("sheared on emit"). Pre-appending `(dx, dy∓5)` as an explicit vertical
+    tail makes the rewrite a no-op. Also: **Sum and Constant blocks reject
+    `NameLocation`** (name position immovable — R14 prints them in a fixed
+    bottom band that IS the mandatory approach corridor of a bottom-fed
+    port), so the router relocates labels only on blocks that accept the
+    parameter.
 
 ## Lessons learned (2 versions of battle damage, distilled)
 

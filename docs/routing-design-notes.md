@@ -116,6 +116,25 @@ connector-routing literature:
 4. **Shared-corridor bundling for >2 branches** (libavoid hyperedge nuance):
    currently all segments fork at one T; bundling would merge their exit runs
    until their lanes diverge.
+5. **Layout side (v6, 2026-10-31, `mcp_sim_arrange`)** — the known limit
+   "arrange's tall single-column layout bounds routing quality" is closed:
+   the old cycle fallback flattened loop members onto their shallowest
+   feeder's layer (16 blocks in one column on EV_Energy_Range). v6 does
+   SCC single-edge cutting with min-total-span enumeration (Sugiyama cycle
+   breaking done properly) + down-down-up-down barycenter sweeps; loops
+   spread horizontally, wrap wires land where a human draws them. Router
+   fixes shipped alongside: the go-around pattern could pierce a
+   vertical-entry dst block from the wrong side (unchecked final descent —
+   the pattern acceptance only checked orthogonality), two such wires
+   dead-locked on each other's stale segments, and A\* vertEntry attempts
+   all died "sheared on emit" (R14's tail rewrite law 12 pulled the
+   proposed goal 5 px off a horizontal rung). Fixes: pullback-12px block
+   check on the final descent, goals restricted to the port's outer side,
+   law-12 tail pre-applied in the A\* emit, label pre-pass (vertical-entry
+   blocks get names moved aside where NameLocation exists — Sum/Constant
+   reject it) + a post-route label-repair round. EV_Energy_Range re-laid
+   at xgap 110 / ygap 55: all metrics zero, sim anchors bit-identical,
+   EV_Drag_Power 2127→2043 and Exp7 9432→8858 as side benefits.
 
 ## Sources
 
