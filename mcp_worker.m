@@ -318,6 +318,18 @@ switch cmd
             resp = ['{"id":' num2str(req.id) ',"ok":false,"error":' jstr(lasterr) '}'];
         end
 
+    case 'sim_scan'
+        % Regex-search saved .mdl file(s) on disk WITHOUT loading the model
+        % (R14 .mdl is plain text -- the official model_scan for .slx, but
+        % easier here). Also handy when a model is too broken to load.
+        try
+            rep = mcp_sim_scan(req.model, req.pattern);
+            jj = mcp2json(rep);
+            resp = ['{"id":' num2str(req.id) ',"ok":true,"value":' jj '}'];
+        catch
+            resp = ['{"id":' num2str(req.id) ',"ok":false,"error":' jstr(lasterr) '}'];
+        end
+
     case 'sim_info'
         % Simulink model integrity audit (ghost lines, unconnected ports).
         try

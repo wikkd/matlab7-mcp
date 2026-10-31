@@ -15,14 +15,17 @@ function report = mcp_sim_audit(model, opts)
 % was removed. Never touches blocks.
 %
 % report fields: model, nlines, nunconnected_src, nunconnected_dst,
-%   orphan_lines (cell of names), duplicate_dst (cell), fixed (cell)
+%   orphan_lines (cell of names), duplicate_dst (cell), unconnected_ports
+%   (cell, "blk inP"/"blk outP"), dangling_tails (cell, src-ok dst-float),
+%   nUnconnSrc, nDanglingTails, fixed (cell)
 
 if nargin < 2, opts = struct(); end
 fix = 0;
 if isfield(opts, 'fix') && opts.fix, fix = 1; end
 
 report = struct('model', model, 'nlines', 0, 'orphan_lines', {{}}, ...
-    'duplicate_dst', {{}}, 'unconnected_ports', {{}}, 'fixed', {{}});
+    'duplicate_dst', {{}}, 'unconnected_ports', {{}}, ...
+    'dangling_tails', {{}}, 'fixed', {{}});
 
 load_system(model);
 % NOTE: on this R14 install find_system(model,'Type','Block') returns ZERO
@@ -106,10 +109,6 @@ end
 
 % --- unconnected input ports (u warn in sim) --------------------------
 for b = 1:numel(blks)
-    bt = get_param(blks{b}, 'BlockType');
-    if strcmp(bt, 'SubSystem') && ~strcmp(get_param(blks{b}, 'Mask'), 'on')
-        % root subsystems may legitimately be library-less; still count
-    end
     try
         ph = get_param(blks{b}, 'PortHandles');
         inports = ph.Inport;
@@ -132,4 +131,61 @@ for b = 1:numel(blks)
         end
     end
 end
+
+% --- unconnected output ports (downstream never receives) -------------
+% Skip blocks whose outputs are legitimately free-floating per R14
+% semantics: broad exception would hide real defects, so only grounded
+% sources (Ground) are exempt.
+nUnconnSrc = 0;
+for b = 1:numel(blks)
+    bt = get_param(blks{b}, 'BlockType');
+    if strcmp(bt, 'Ground'), continue; end
+    try
+        ph = get_param(blks{b}, 'PortHandles');
+        outports = ph.Outport;
+    catch
+        continue;
+    end
+    for p = 1:numel(outports)
+        if outports(p) == -1, continue; end
+        try
+            lh = get_param(outports(p), 'Line');
+            if lh == -1 || lh == 0
+                nUnconnSrc = nUnconnSrc + 1;
+                report.unconnected_ports{end+1} = [blks{b}, ' out', num2str(p)]; %#ok<AGROW>
+            end
+        catch
+        end
+    end
+end
+
+% --- dangling line tails (source ok, DstPortHandle == -1) -------------
+% Distinct from orphan_lines: the line exists on a real source port but
+% its destination end floats. Sim compiles these as broken/grounded.
+nDangTail = 0;
+for k = 1:numel(lineHandles)
+    h = lineHandles(k);
+    try
+        dp = get_param(h, 'DstPortHandle');
+    catch
+        continue;   % already reported as orphan
+    end
+    if numel(dp) == 1 && (dp(1) == -1 || dp(1) == 0)
+        sp = get_param(h, 'SrcPortHandle');
+        sb = '';
+        try
+            sb = get_param(sp, 'Parent');
+        catch
+            sb = 'unknown';
+        end
+        nDangTail = nDangTail + 1;
+        report.dangling_tails{end+1} = ['line ', num2str(h), ' from ', sb]; %#ok<AGROW>
+    end
+end
+
+report = orderfields(report, ...
+    {'model', 'nlines', 'orphan_lines', 'duplicate_dst', ...
+     'unconnected_ports', 'dangling_tails', 'fixed'});
+report.nUnconnSrc = nUnconnSrc;   %#ok<NASGU>
+report.nDanglingTails = nDangTail; %#ok<NASGU>
 end

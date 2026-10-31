@@ -523,9 +523,25 @@ const TOOLS = [
     inputSchema: { type: 'object', properties: {} },
   },
   {
+    name: 'matlab_sim_scan',
+    description: 'Regex-search saved .mdl file(s) on disk WITHOUT loading the model into '
+      + 'Simulink. R14 models are plain text, so this finds block names, parameter values, '
+      + 'or any string quickly and safely -- even when the model is too broken to load. '
+      + 'Pass a folder to scan every .mdl in it. Case-insensitive.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: '.mdl file path, or a folder to scan all .mdl in it' },
+        pattern: { type: 'string', description: 'Regular expression to search for' },
+      },
+      required: ['path', 'pattern'],
+    },
+  },
+  {
     name: 'matlab_sim_info',
     description: 'Audit a loaded-or-not Simulink model for R14 ghost-line problems: orphan '
-      + 'line segments, lines with duplicate destination ports, unconnected input ports. '
+      + 'line segments, lines with duplicate destination ports, unconnected input AND output '
+      + 'ports, and dangling line tails (source ok, destination floats). '
       + 'With fix=true it also deletes the offending lines (caller re-adds connections). '
       + 'Run after any session of add_line/delete_block surgery that produced '
       + '"destination port already has a line connection" errors.',
@@ -785,6 +801,18 @@ async function callTool(name, args) {
       if (!r.ok) return textOut('Error: ' + (r.error || 'unknown'), true);
       const lines = (r.value || []).map((f, i) => `handle ${f.handle}  (newest=${i === 0})  ${f.visible}${f.name ? '  "' + f.name + '"' : ''}`);
       return textOut(lines.length ? lines.join('\n') : '(no open figures)');
+    }
+    case 'matlab_sim_scan': {
+      const r = await workerRequest({
+        cmd: 'sim_scan',
+        model: String(args.path),
+        pattern: String(args.pattern),
+      }, 120);
+      if (!r.ok) return textOut('Error: ' + (r.error || 'unknown'), true);
+      const v = r.value || {};
+      const head = `${v.nMatches} match(es) for /${v.pattern}/i in ${v.nLinesScanned} scanned lines of ${v.path}`;
+      const hits = (v.lines || []).map(h => `  L${h.lineNo}: ${h.text}`);
+      return textOut([head].concat(hits).join('\n'));
     }
     case 'matlab_sim_info': {
       const r = await workerRequest({

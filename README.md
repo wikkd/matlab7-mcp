@@ -156,7 +156,7 @@ ask me instead of guessing.
 After the agent finishes, restart your MCP client and try
 *"list my MATLAB workspace"* to confirm.
 
-## Tools (23)
+## Tools (25)
 
 **Execution & diagnostics**
 
@@ -193,7 +193,8 @@ After the agent finishes, restart your MCP client and try
 
 | Tool | What it does |
 |---|---|
-| `matlab_sim_info` | Audit a model: ghost lines (duplicate destinations), orphan segments, unconnected ports (optional auto-fix) |
+| `matlab_sim_scan` | Regex-search saved .mdl file(s) on disk WITHOUT loading the model (R14 .mdl is plain text; works even when the model is too broken to load) |
+| `matlab_sim_info` | Audit a model: ghost lines (duplicate destinations), orphan segments, unconnected input AND output ports, dangling line tails (optional auto-fix) |
 | `matlab_sim_clean` | Gently remove orphan line segments and save |
 | `matlab_sim_route` | Orthogonal auto-routing for every line in a model (see below) |
 | `matlab_sim_arrange` | Sugiyama-style block auto-arrangement (see below) |
@@ -453,6 +454,22 @@ Real course models, sim outputs compared before/after:
    23 tools land without casualties.
 
 ## Changelog
+
+### v3.2 — parity with the official MathWorks MCP server
+
+Compared against the official `matlab/matlab-mcp-server` + `simulink-agentic-toolkit`
+(requires R2021a+; this project stays on R14). Two real gaps were worth closing:
+
+| Official tool we lacked | v3.2 answer |
+|---|---|
+| `model_scan` — regex-search a saved model on disk without loading it | `matlab_sim_scan`: R14 .mdl is plain text, so the disk search needs no model load at all — also works on models too broken to load. Pass a folder to scan every .mdl in it |
+| `model_check`'s unconnected-port / dangling-line detection | `matlab_sim_info` now also audits unconnected OUTPUT ports (not just inputs) and dangling line tails (source ok, destination floats); report gains `nUnconnSrc` / `nDanglingTails` |
+
+The rest of the official surface is not applicable on R14 (`run_matlab_test_file`
+needs matlab.unittest, `shareMATLABSession` needs the engine API) or is something
+this server already had with more care for long jobs (async fire→poll→collect,
+worker lifecycle, budgeted data reads) — plus layout/routing, which the official
+server does not offer at all.
 
 ### v3 — Simulink layout pipeline + course battle damage
 
