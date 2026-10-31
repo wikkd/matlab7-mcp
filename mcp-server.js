@@ -138,7 +138,7 @@ function handleMcpLine(line) {
     rpcResult(msg.id, {
       protocolVersion: msg.params?.protocolVersion || '2024-11-05',
       capabilities: { tools: {} },
-      serverInfo: { name: 'matlab7-mcp-server', version: '3.1.0' },
+      serverInfo: { name: 'matlab7-mcp-server', version: '3.2.0' },
     });
     return;
   }
@@ -938,6 +938,6 @@ function shutdown() {
 
 // -------------------------------------------------------------------- main
 try { fs.mkdirSync(WORK_DIR, { recursive: true }); } catch {}
-send({ jsonrpc: '2.0', method: 'notifications/log', params: { level: 'info', data: `matlab7-mcp-server v3.1 ready (${TOOLS.length} tools)` } });
+send({ jsonrpc: '2.0', method: 'notifications/log', params: { level: 'info', data: `matlab7-mcp-server v3.2 ready (${TOOLS.length} tools)` } });
 // Keep the process alive; worker starts lazily on first tool call.
 setInterval(() => {}, 1 << 30);

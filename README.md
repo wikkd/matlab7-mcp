@@ -156,7 +156,7 @@ ask me instead of guessing.
 After the agent finishes, restart your MCP client and try
 *"list my MATLAB workspace"* to confirm.
 
-## Tools (25)
+## Tools (24)
 
 **Execution & diagnostics**
 
@@ -604,7 +604,7 @@ node v3_regress.js <repo>     # full regression: real server + real R14 worker, 
 ```
 
 The regression boots a real stdio server + real MATLAB worker and runs 46
-assertions across all 23 tools (currently all passing). Requires an
+assertions across all 24 tools (currently all passing). Requires an
 interactive desktop session (window capture). `v3_smoke_window.js` tests the
 capture chain; `v3_smoke_arrange.js <model path>` tests the arrange+route
 pipeline on any Simulink model. CI (GitHub Actions) runs the static layer on
