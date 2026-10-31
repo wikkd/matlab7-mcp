@@ -338,6 +338,21 @@ junctions"):
     wires grazing an immovable name are reported by the metrics (own-label
     approach corridor = R14-unfixable, exempt); EV_Energy_Range re-laid at
     xgap 110 / ygap 55: **all metrics zero, sim anchors bit-identical**.
+12. **Parallel-crowding control (v6.1)** — different-family wires running
+    2..10 px apart over > 24 px read as one merged line on screen. Four
+    layers: (a) the metrics count such pairs (`parallel`, same thresholds
+    as the fixer — a gap the grader counts must be fixable); (b) the A\*
+    congestion layer is two-ring (full rate within 10 px, half rate
+    10..22 px, `congest` default 8→12) so the search spreads lanes; (c)
+    pattern soft-avoidance bans channels within 12 px of another family's
+    same-direction segment; (d) `ex_pick` treats a parallel descent within
+    12 px (span overlap > 24 px) as occupied, so entry columns spread
+    already at first routing — this alone cleared Exp7's 6-descent left
+    rail (len 8858→7924 on a clean re-lay) — plus a `wire_par_fixes`
+    nudge phase (bans the whole crowded band, both coordinates -/+ 8 px)
+    for pairs that survive. All four models re-verified from clean
+    copies: parallel 0 everywhere, all other metrics still zero, sim
+    anchors bit-identical.
 
 ### Verified results
 

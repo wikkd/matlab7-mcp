@@ -131,6 +131,40 @@ for a = 1:size(seg, 1)
     end
 end
 
+% ---- parallel wire crowding (different families) ----
+% Two parallel segments of different nets running close and long look like
+% one merged wire on screen. Count pairs with gap 2..10 px and > 24 px of
+% span overlap. Segments 1-2 are the R14 exit stubs (exempt); the last two
+% ordinals are R14-canonical approach segments (unmovable -- both-forced
+% pairs are official-normal rendering, skip them).
+nPar = 0; parTxt = '';
+for a = 1:size(seg, 1)
+    if segIdx(a) <= 2, continue; end
+    for b = a+1:size(seg, 1)
+        if segIdx(b) <= 2, continue; end
+        if segLn(b) == segLn(a), continue; end
+        if segFam(b) == segFam(a), continue; end
+        x1=seg(a,1); y1=seg(a,2); x2=seg(a,3); y2=seg(a,4);
+        u1=seg(b,1); v1=seg(b,2); u2=seg(b,3); v2=seg(b,4);
+        gap = 0; span = 0;
+        if abs(y1-y2) < 0.5 && abs(v1-v2) < 0.5 && abs(y1-v1) > 2 && ...
+                abs(y1-v1) <= 10
+            gap = abs(y1-v1);
+            span = min(max(x1,x2), max(u1,u2)) - max(min(x1,x2), min(u1,u2));
+        end
+        if abs(x1-x2) < 0.5 && abs(u1-u2) < 0.5 && abs(x1-u1) > 2 && ...
+                abs(x1-u1) <= 10
+            gap = abs(x1-u1);
+            span = min(max(y1,y2), max(v1,v2)) - max(min(y1,y2), min(v1,v2));
+        end
+        if span > 24
+            nPar = nPar + 1;
+            parTxt = [parTxt, sprintf('  L%02d x L%02d gap=%d span=%d\n', ...
+                segLn(a), segLn(b), round(gap), round(span))]; %#ok<AGROW>
+        end
+    end
+end
+
 % ---- block / label hits ----
 % Segments 1-2 of each line are the R14-mandated exit-stub pair (rewritten
 % by R14 itself after every set; hidden under the port arrow) -- exempt.
@@ -181,13 +215,14 @@ end
 
 m = struct('model', model, 'lines', size(L,1), 'diag', nDiag, ...
     'outOfBbox', nOut, 'crossFamOverlaps', nOv, 'crossings', nCross, ...
-    'blockHits', nBlk, 'labelHits', nLab, 'totalLen', totLen, ...
-    'totalBends', totBend, 'maxDetour', worst(1));
+    'parallel', nPar, 'blockHits', nBlk, 'labelHits', nLab, ...
+    'totalLen', totLen, 'totalBends', totBend, 'maxDetour', worst(1));
 if verbose
     fprintf('=== METRICS %s ===\n', model);
-    fprintf('lines=%d diag=%d out=%d xFamOv=%d crossings=%d blk=%d lab=%d len=%d bends=%d maxDet=%.1f\n', ...
-        size(L,1), nDiag, nOut, nOv, nCross, nBlk, nLab, totLen, totBend, worst(1));
+    fprintf('lines=%d diag=%d out=%d xFamOv=%d crossings=%d parallel=%d blk=%d lab=%d len=%d bends=%d maxDet=%.1f\n', ...
+        size(L,1), nDiag, nOut, nOv, nCross, nPar, nBlk, nLab, totLen, totBend, worst(1));
     if nOv > 0, fprintf('overlaps:\n%s', ovTxt); end
+    if nPar > 0, fprintf('parallel crowding:\n%s', parTxt); end
     if nBlk + nLab > 0, fprintf('hits:\n%s', hitTxt); end
     if ~isempty(detTxt), fprintf('worst detours:\n%s', detTxt); end
     fprintf('=== end ===\n');

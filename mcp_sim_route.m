@@ -53,7 +53,7 @@ if isfield(opts, 'margin'), margin = opts.margin; end
 
 % v5 A* options threaded to route_one -> route_astar
 aopts = struct('method', 'astar', 'bend', 60, 'cross', 20, ...
-               'congest', 8, 'budget', 30000, 'span', 2 * spacing);
+               'congest', 12, 'budget', 30000, 'span', 2 * spacing);
 if isfield(opts, 'method'), aopts.method = opts.method; end
 if isfield(opts, 'bend'), aopts.bend = opts.bend; end
 if isfield(opts, 'cross'), aopts.cross = opts.cross; end
@@ -447,69 +447,93 @@ for sweep = 1:2
     end
 end
 
-% ---------------- pass 4: wire separation (v4 nudge) ----------------
+% ---------------- pass 4: wire separation (v4 nudge + v6.1 crowding) ---
 % Middle segments (ordinal >= 2) of two different families sharing a
-% corridor are separated by re-routing the later line with the colliding
-% coordinate hard-banned. Two sweeps max; failures restore the previous
-% geometry, so the pass can only improve.
+% corridor (v4: superposition; v6.1: 2..8 px parallel runs) are separated
+% by re-routing the movable side with the colliding coordinate hard-banned
+% (v6.1 bans the whole crowded band: both coordinates -/+ 8 px). Two
+% sweeps superposition + two sweeps crowding max; failures restore the
+% previous geometry, so the pass can only improve.
 nSuper0 = wire_count_super(wireA, wireFam, wireLine, wireOrd, wireLast);
 nNudged = 0;
-for sweep = 1:2
-    [ns, fixes] = wire_super_fixes(wireA, wireFam, wireLine, wireOrd, wireLast);
-    if ns == 0
-        break;
-    end
-    did = false;
-    handled = [];
-    for f = 1:numel(fixes)
-        fx = fixes{f};
-        h = fx{1};
-        if ~isempty(find(handled == h, 1)), continue; end
-        handled(end+1) = h; %#ok<AGROW>
-        recN = [];
+for phase = 1:2
+    for sweep = 1:2
+        if phase == 1
+            [ns, fixes] = wire_super_fixes(wireA, wireFam, wireLine, ...
+                                           wireOrd, wireLast);
+        else
+            [ns, fixes] = wire_par_fixes(wireA, wireFam, wireLine, ...
+                                         wireOrd, wireLast);
+        end
+        if ns == 0
+            break;
+        end
+        did = false;
+        handled = [];
+        for f = 1:numel(fixes)
+            fx = fixes{f};
+            h = fx{1};
+            if ~isempty(find(handled == h, 1)), continue; end
+            handled(end+1) = h; %#ok<AGROW>
+            recN = [];
+            for r2 = 1:numel(recs)
+                if recs{r2}{1} == h
+                    recN = recs{r2};
+                    break;
+                end
+            end
+            if isempty(recN), continue; end
+            Pold = [];
+            try Pold = get_param(h, 'Points'); catch, end
+            [wireA, wireFam, wireLine, wireOrd, wireLast] = wire_del(wireA, ...
+                wireFam, wireLine, wireOrd, wireLast, h);
+            % ban coordinates: fx{3} always present; fx{4} (v6.1) bans the
+            % neighbor's coordinate too -- the whole crowded band
+            banX = [];
+            banY = [];
+            if fx{2} == 1
+                banX = fx{3};
+                if numel(fx) >= 4
+                    banX = [banX, fx{4}, fx{3} - 8, fx{3} + 8, ...
+                            fx{4} - 8, fx{4} + 8];
+                end
+                [okS, msgN] = route_one(h, recN{2}, Rfull, R, spacing, ...
+                                        recN{3}, wireA, wireFam, banX, [], aopts);
+            else
+                banY = fx{3};
+                if numel(fx) >= 4
+                    banY = [banY, fx{4}, fx{3} - 8, fx{3} + 8, ...
+                            fx{4} - 8, fx{4} + 8];
+                end
+                [okS, msgN] = route_one(h, recN{2}, Rfull, R, spacing, ...
+                                        recN{3}, wireA, wireFam, [], banY, aopts);
+            end
+            if okS || strcmp(msgN, 'straight')
+                nNudged = nNudged + 1;
+                did = true;
+            else
+                if ~isempty(Pold)
+                    try set_param(h, 'Points', Pold); catch, end
+                end
+            end
+            [wireA, wireFam, wireLine, wireOrd, wireLast] = wire_add(wireA, ...
+                wireFam, wireLine, wireOrd, wireLast, h);
+        end
+        if ~did
+            break;
+        end
+        % anchors may have been dragged by the re-routes: re-converge
         for r2 = 1:numel(recs)
-            if recs{r2}{1} == h
-                recN = recs{r2};
-                break;
+            rec = recs{r2};
+            Pcur = get_param(rec{1}, 'Points');
+            if isempty(Pcur) || all_orthogonal(Pcur)
+                continue;
             end
+            route_one(rec{1}, rec{2}, Rfull, R, spacing, rec{3}, ...
+                      wireA, wireFam, [], [], aopts);
+            [wireA, wireFam, wireLine, wireOrd, wireLast] = wire_add(wireA, ...
+                wireFam, wireLine, wireOrd, wireLast, rec{1});
         end
-        if isempty(recN), continue; end
-        Pold = [];
-        try Pold = get_param(h, 'Points'); catch, end
-        [wireA, wireFam, wireLine, wireOrd, wireLast] = wire_del(wireA, ...
-            wireFam, wireLine, wireOrd, wireLast, h);
-        if fx{2} == 1
-            [okS, msgN] = route_one(h, recN{2}, Rfull, R, spacing, ...
-                                    recN{3}, wireA, wireFam, fx{3}, [], aopts);
-        else
-            [okS, msgN] = route_one(h, recN{2}, Rfull, R, spacing, ...
-                                    recN{3}, wireA, wireFam, [], fx{3}, aopts);
-        end
-        if okS || strcmp(msgN, 'straight')
-            nNudged = nNudged + 1;
-            did = true;
-        else
-            if ~isempty(Pold)
-                try set_param(h, 'Points', Pold); catch, end
-            end
-        end
-        [wireA, wireFam, wireLine, wireOrd, wireLast] = wire_add(wireA, ...
-            wireFam, wireLine, wireOrd, wireLast, h);
-    end
-    if ~did
-        break;
-    end
-    % anchors may have been dragged by the re-routes: re-converge
-    for r2 = 1:numel(recs)
-        rec = recs{r2};
-        Pcur = get_param(rec{1}, 'Points');
-        if isempty(Pcur) || all_orthogonal(Pcur)
-            continue;
-        end
-        route_one(rec{1}, rec{2}, Rfull, R, spacing, rec{3}, ...
-                  wireA, wireFam, [], [], aopts);
-        [wireA, wireFam, wireLine, wireOrd, wireLast] = wire_add(wireA, ...
-            wireFam, wireLine, wireOrd, wireLast, rec{1});
     end
 end
 nSuper1 = wire_count_super(wireA, wireFam, wireLine, wireOrd, wireLast);
@@ -667,7 +691,7 @@ if nargin < 9, hardBanX = []; end
 if nargin < 10, hardBanY = []; end
 if nargin < 11
     aopts = struct('method', 'pattern', 'bend', 60, 'cross', 20, ...
-                   'congest', 8, 'budget', 30000, 'span', 180);
+                   'congest', 12, 'budget', 30000, 'span', 180);
 end
 Psave = [];
 try Psave = get_param(lineH, 'Points'); catch, end
@@ -696,7 +720,7 @@ function [ok, msg] = route_attempt(lineH, dstPort, R, spacing, isTrunk, ...
 % msg carries the error.
 if nargin < 10
     aopts = struct('method', 'pattern', 'bend', 60, 'cross', 20, ...
-                   'congest', 8, 'budget', 30000, 'span', 180);
+                   'congest', 12, 'budget', 30000, 'span', 180);
 end
 ok = false;
 msg = '';
@@ -761,9 +785,10 @@ try
 
     % v4: soft lane/channel bans from already-routed lines of other
     % families. A V channel at an x another family's V segment occupies with
-    % overlapping y-span would run on top of it; same for H lanes. Soft =
-    % tried last, so this can never over-constrain. Hard bans (nudge pass)
-    % are skipped entirely.
+    % overlapping y-span would run on top of it; same for H lanes. v6.1:
+    % also soft-ban channels WITHIN 12 px of such a segment (parallel runs
+    % that close read as one merged wire) -- soft ordering, so it can never
+    % over-constrain. Hard bans (nudge pass) are skipped entirely.
     softX = [];
     softY = [];
     myFam = 0;
@@ -773,11 +798,15 @@ try
         sw = wireA(w, :);
         if sw(1) == sw(3)
             if sw(2) < max(sy, dy) - 4 && sw(4) > min(sy, dy) + 4
-                softX(end+1) = sw(1); %#ok<AGROW>
+                for dv = -12:4:12
+                    softX(end+1) = sw(1) + dv; %#ok<AGROW>
+                end
             end
         else
             if sw(1) < max(sx, dx) - 4 && sw(3) > min(sx, dx) + 4
-                softY(end+1) = sw(2); %#ok<AGROW>
+                for dv = -12:4:12
+                    softY(end+1) = sw(2) + dv; %#ok<AGROW>
+                end
             end
         end
     end
@@ -1130,10 +1159,13 @@ for k = 0:6
     for w = 1:size(wireA, 1)
         if wireFam(w) == myFam, continue; end
         sw = wireA(w, :);
-        if sw(1) == sw(3) && abs(sw(1) - xc) < 0.5
+        if sw(1) == sw(3)
+            % v6.1: a parallel descent within 12 px with a >24 px span
+            % overlap also occupies -- descending columns 10 px apart read
+            % as one merged wire (the Exp7 left-rail pileup).
             lo = max(min(sw(2), sw(4)), spanLo);
             hi = min(max(sw(2), sw(4)), spanHi);
-            if hi - lo > 6
+            if abs(sw(1) - xc) <= 12 && hi - lo > 24
                 occ = true;
                 break;
             end
@@ -1281,6 +1313,57 @@ for i = 1:n
         elseif si(1) ~= si(3) && sj(1) ~= sj(3) && abs(si(2) - sj(2)) < 2
             if min(si(3), sj(3)) - max(si(1), sj(1)) > 6
                 ns = ns + 1;
+            end
+        end
+    end
+end
+end
+
+% ------------------------------------------------------------------
+function [ns, fixes] = wire_par_fixes(A, F, L, O, W)
+% v6.1 parallel-crowding nudge: different-family segments 2..10 px apart
+% with > 24 px of overlap read as one merged wire (same thresholds as the
+% metrics' parallel counter -- a gap the grader counts must be fixable).
+% Nudge the movable side by hard-banning BOTH its own coordinate and the
+% neighbor's coordinate +/- 8 px (the whole crowded band), forcing a lane
+% elsewhere. Both-forced pairs are skipped (official-normal rendering).
+ns = 0;
+fixes = {};
+n = size(A, 1);
+for i = 1:n
+    if O(i) <= 1, continue; end
+    for j = i+1:n
+        if O(j) <= 1, continue; end
+        if F(i) == F(j), continue; end
+        si = A(i, :);
+        sj = A(j, :);
+        if si(1) == si(3) && sj(1) == sj(3)
+            gap = abs(si(1) - sj(1));
+            ov = min(si(4), sj(4)) - max(si(2), sj(2));
+            if gap > 2 && gap <= 10 && ov > 24
+                if W(i) && W(j)
+                    continue;
+                end
+                ns = ns + 1;
+                if W(j)
+                    fixes{end+1} = {L(i), 1, si(1), sj(1)}; %#ok<AGROW>
+                else
+                    fixes{end+1} = {L(j), 1, sj(1), si(1)}; %#ok<AGROW>
+                end
+            end
+        elseif si(1) ~= si(3) && sj(1) ~= sj(3)
+            gap = abs(si(2) - sj(2));
+            ov = min(si(3), sj(3)) - max(si(1), sj(1));
+            if gap > 2 && gap <= 10 && ov > 24
+                if W(i) && W(j)
+                    continue;
+                end
+                ns = ns + 1;
+                if W(j)
+                    fixes{end+1} = {L(i), 2, si(2), sj(2)}; %#ok<AGROW>
+                else
+                    fixes{end+1} = {L(j), 2, sj(2), si(2)}; %#ok<AGROW>
+                end
             end
         end
     end
@@ -1482,6 +1565,20 @@ try
                     end
                 end
             end
+            % v6.1 wide crowding ring: parallel runs 10..22 px away are also
+            % priced (half rate) so A* spreads lanes instead of hugging
+            jr3 = find(ys >= ya - 22 & ys <= yb + 22);
+            if ~isempty(jr3)
+                for jj = jr3
+                    for k = 1:nx-1
+                        if Hc(jj, k) < Inf && ...
+                           min(abs(xs(k) - xv), abs(xs(k+1) - xv)) > 10 && ...
+                           min(abs(xs(k) - xv), abs(xs(k+1) - xv)) <= 22
+                            Hc(jj, k) = Hc(jj, k) + lamC / 2;
+                        end
+                    end
+                end
+            end
             ir2 = find(xs >= xv - 10 & xs <= xv + 10);
             [ja, jb] = astar_ivl(ys, ya - 10, yb + 10);
             if ~isempty(ir2) && ja > 0
@@ -1490,6 +1587,19 @@ try
                         for jv = ja:jb
                             if Vc(jv, ii) < Inf
                                 Vc(jv, ii) = Vc(jv, ii) + lamC;
+                            end
+                        end
+                    end
+                end
+            end
+            ir3 = find(xs >= xv - 22 & xs <= xv + 22);
+            [ja, jb] = astar_ivl(ys, ya - 22, yb + 22);
+            if ~isempty(ir3) && ja > 0
+                for ii = ir3
+                    if ii <= nx
+                        for jv = ja:jb
+                            if Vc(jv, ii) < Inf
+                                Vc(jv, ii) = Vc(jv, ii) + lamC / 2;
                             end
                         end
                     end
@@ -1527,6 +1637,19 @@ try
                     end
                 end
             end
+            % v6.1 wide ring (half rate, 10..22 px)
+            ir3 = find(xs >= xa - 22 & xs <= xb + 22);
+            if ~isempty(ir3)
+                for ii = ir3
+                    for j = 1:ny-1
+                        if Vc(j, ii) < Inf && ...
+                           min(abs(ys(j) - yh), abs(ys(j+1) - yh)) > 10 && ...
+                           min(abs(ys(j) - yh), abs(ys(j+1) - yh)) <= 22
+                            Vc(j, ii) = Vc(j, ii) + lamC / 2;
+                        end
+                    end
+                end
+            end
             ASTARPHASE = 'wireH-congH';
             jr2 = find(ys >= yh - 10 & ys <= yh + 10);
             if ~isempty(jr2)
@@ -1536,6 +1659,20 @@ try
                         for k2 = ia:ib
                             if Hc(jj, k2) < Inf
                                 Hc(jj, k2) = Hc(jj, k2) + lamC;
+                            end
+                        end
+                    end
+                end
+            end
+            % v6.1 wide ring (half rate)
+            jr3 = find(ys >= yh - 22 & ys <= yh + 22);
+            if ~isempty(jr3)
+                [ia, ib] = astar_ivl(xs, xa - 22, xb + 22);
+                if ia > 0
+                    for jj = jr3
+                        for k2 = ia:ib
+                            if Hc(jj, k2) < Inf
+                                Hc(jj, k2) = Hc(jj, k2) + lamC / 2;
                             end
                         end
                     end

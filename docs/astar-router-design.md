@@ -246,3 +246,26 @@ pattern-side hole, all fixed the same day (see README rule 11 / law 12):
    port. Not routable around; the metrics exempt the own-label-on-tail
    class, and blocks that DO accept NameLocation get their labels moved
    aside pre-route.
+
+## 12. v6.1 addendum (2026-10-31, parallel crowding)
+
+User requirement: parallel wires must not run too close. New metric
+`parallel` (2..10 px gap, > 24 px overlap, different families) plus four
+control layers, thresholds shared between grader and fixer:
+
+1. A* congestion: two rings (<= 10 px full lamC, 10..22 px half lamC),
+   `congest` default 8 -> 12.
+2. Pattern soft avoidance: channels within 12 px of another family's
+   same-direction segment pushed to the end of the candidate list.
+3. ex_pick: a parallel descent within 12 px with > 24 px span overlap
+   counts as occupied -> entry columns spread at first routing. This is
+   the high-leverage one: Exp7's left rail had 6 descents 4-10 px apart;
+   one clean re-lay cleared all pairs and shortened the model by 934 px
+   (8858 -> 7924).
+4. wire_par_fixes nudge phase: bans the whole crowded band (both
+   coordinates +/- 8 px) for surviving pairs; re-route restores old
+   geometry on failure, so it can only improve.
+
+Lesson from the interim state: running the nudge on ALREADY-crowded
+output whack-a-moles (fixing one pair created another); the win comes
+from spacing columns at first routing, then nudging only what's left.
