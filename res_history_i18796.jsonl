@@ -1,2 +1,0 @@
-{"id":1,"ok":true,"value":{"total":0,"passed":0,"cleared":false,"lines":null},"cmd":"assert_report"}
-{"id":4,"ok":true,"value":{"passed":false,"name":"SOC above 90 pct (expect FAIL)","got":false},"cmd":"assert"}

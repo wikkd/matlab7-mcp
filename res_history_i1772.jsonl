@@ -1,3 +1,0 @@
-{"id":8,"ok":true,"stdout":"first eval after tilde fix\r\n\r\n","cmd":"eval"}
-{"id":9,"ok":false,"stdout":"Error: Illegal use of reserved keyword \"catch\".","error":"(console tail, last 30 lines)\nError: Illegal use of reserved keyword \"catch\".","cmd":"eval"}
-{"id":10,"ok":true,"stdout":"workspace primed\r\n\r\n","cmd":"eval"}

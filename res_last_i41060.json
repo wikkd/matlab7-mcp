@@ -1,1 +1,0 @@
-{"id":4,"ok":true,"value":{"total":3,"passed":1,"cleared":true,"lines":["exp5 [PASS] exp5 energy anchor","exp7 [FAIL] SOC above 90 pct (expect FAIL)","misc [FAIL] throwing counts FAIL"]},"cmd":"assert_report"}

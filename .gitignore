@@ -33,3 +33,8 @@ busy.json
 progress.json
 *.diary
 worker_boot.log
+res_history*.jsonl
+res_last_*.json
+req_*.json
+res_boot.json
+boot.lock
