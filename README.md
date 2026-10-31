@@ -277,6 +277,21 @@ junctions"):
    recognized as R14-forced and never chosen as nudge targets — pairs
    of two forced segments are official-normal merged renders.
    report.super_before/super_after/nudged quantify the pass.
+9. **Entry-lane de-confliction (v4.1)**: R14 pins every stored tail to the
+   canonical elbow `(dst_x-10, dst_y)`, so all lines entering a block-edge
+   column used to descend the SAME vertical lane and stack on top of each
+   other (13 cross-signal superpositions on EV_Energy_Range's left column
+   alone). `ex_pick` prefers the canonical column but steps left in 10 px
+   while another family's vertical occupies the descent span (or the dst-row
+   rung would overlap, or blocks/labels sit on it). Probe-verified shape:
+   descend at `X < dx-10`, run along the dst row, **store the canonical
+   elbow explicitly** — R14 rewrites the last stored point to the elbow
+   otherwise and shears a diagonal. Ports whose bare probe discovers no
+   elbow (`ex == dx`, vertical-entry Sum inputs) keep the unshifted descent.
+   Independent post-route audit on EV_Energy_Range: block/label hits 0,
+   cross-family colinear overlaps 13 → **0**, diagonals 3 → 0, sim anchors
+   (E/SOC/mileage) bit-identical; Comm_Link / exp6 / exp7 copies all 0
+   failed, super 0→0, cross-family 0.
 
 ### Verified results
 
@@ -327,6 +342,13 @@ Real course models, sim outputs compared before/after:
    `java.awt.Toolkit.getDefaultToolkit.getFontMetrics(Font('Helvetica',0,10))`
    (R14 rejects chained static calls — two steps) and assume below-block
    placement.
+11. **R14 rewrites the LAST stored point of any set shape to the canonical
+   elbow `(dst_x-10, dst_y)`** (not just bare trunks — law 2 generalizes):
+   a shape whose descent leaves the canonical column must still end
+   `...;(X,dy);(dx-10,dy)` explicitly, else the rewrite shears a diagonal.
+   The elbow is discovered by the bare `[P0;dp]` probe; after a failed set
+   the learned value is polluted (`Pr(end,1)` = dst), so re-probe rather
+   than accumulate.
 
 ## Lessons learned (2 versions of battle damage, distilled)
 

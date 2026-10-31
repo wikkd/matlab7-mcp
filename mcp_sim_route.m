@@ -613,8 +613,18 @@ try
             laneY = cy2;
             break;
         end
+        if laneY ~= 0 && ex < dx - 0.5
+            % real canonical elbow discovered: the descent may leave it,
+            % but the stored tail must still END at (ex, dy) -- R14 rewrites
+            % the last point to the canonical elbow otherwise (shear).
+            X2 = ex_pick(wireA, wireFam, myFam, ex, laneY, dy, R);
+            if isempty(X2) || seg_blocked_h(min(sx, X2), max(sx, X2), ...
+                    laneY, R)
+                laneY = 0;   % every entry column blocked; try go-around
+            end
+        end
         if laneY ~= 0
-            P = [sx sy; sx laneY; ex, laneY; ex, dy];
+            P = [sx sy; sx laneY; X2, laneY; X2, dy; ex, dy];
             P = dedup_pts(P);
             set_param(lineH, 'Points', P);
             Pr = get_param(lineH, 'Points');
@@ -663,10 +673,15 @@ try
         laneCands = [laneCands, laneUp, laneDn, laneUp + 25, laneDn - 25, ...
                      laneUp + 50, laneDn - 50, laneUp + 75, laneDn - 75];
         laneCands = cands_keep(laneCands, softY, hardBanY);
+        global DBGR gaRow gaCxg gaX2 gaExt gaSet gaLast
+        gaRow = 0; gaCxg = 0; gaX2 = 0; gaExt = 0; gaSet = 0; gaLast = 0;
         for lc = 1:numel(laneCands)
             cyTry = laneCands(lc);
             if isempty(cyTry), continue; end
-            if seg_blocked_h(sx, dx, cyTry, R), continue; end
+            if seg_blocked_h(sx, dx, cyTry, R)
+                gaRow = gaRow + 1;
+                continue;
+            end
             cxg = 0;
             cxgFB = 0;
             for s4 = 0:10
@@ -680,13 +695,33 @@ try
                 if cxgFB == 0, cxgFB = c4; end
             end
             if cxg == 0, cxg = cxgFB; end
-            if cxg == 0, continue; end
-            if seg_blocked_v(cyTry, dy, ex, R), continue; end
+            if cxg == 0
+                gaCxg = gaCxg + 1;
+                continue;
+            end
+            if ex < dx - 0.5
+                % real canonical elbow discovered: descent may leave it, but
+                % the stored tail must still END at (ex, dy) -- R14 rewrites
+                % the last point to the canonical elbow otherwise (shear).
+                X2 = ex_pick(wireA, wireFam, myFam, ex, cyTry, dy, R);
+            else
+                X2 = ex;   % vertical-entry port: descent must stay at dx
+            end
+            if isempty(X2)
+                gaX2 = gaX2 + 1;
+                continue;
+            end
+            if seg_blocked_h(min([sx, dx, X2 - 8]), ...
+                    max([sx, dx, X2 - 8]), cyTry, R)
+                gaExt = gaExt + 1;
+                gaLast = cyTry;
+                continue;
+            end
             if isTrunk
                 P = [sx sy; cxg - 8, sy; cxg, sy; cxg, cyTry; ...
-                     ex - 8, cyTry; ex, cyTry; ex, dy];
+                     X2 - 8, cyTry; X2, cyTry; X2, dy; ex, dy];
             else
-                P = [sx sy; cxg, sy; cxg, cyTry; ex, cyTry; ex, dy];
+                P = [sx sy; cxg, sy; cxg, cyTry; X2, cyTry; X2, dy; ex, dy];
             end
             P = dedup_pts(P);
             set_param(lineH, 'Points', P);
@@ -703,9 +738,17 @@ try
                 dy = Pr(end, 2);
                 ex = Pr(end, 1);
             end
+            gaSet = gaSet + 1;
+            gaLast = cyTry;
         end
     end
 
+    global DBGR
+    if ~isempty(DBGR)
+        fprintf('ROUTE-FAIL (%d,%d)->(%d,%d) ex=%d trunk=%d laneC=%d: row=%d cxg=%d x2=%d ext=%d set=%d lastLane=%d\n', ...
+            sx, sy, dx, dy, ex, isTrunk, numel(laneCands), gaRow, gaCxg, ...
+            gaX2, gaExt, gaSet, gaLast);
+    end
     msg = 'no clear channel found; left unchanged';
 catch
     msg = ['route_attempt failed: ', lasterr];
@@ -730,6 +773,61 @@ for k = 1:numel(cands)
     end
 end
 out = [out, lastC];
+end
+
+% ------------------------------------------------------------------
+function X = ex_pick(wireA, wireFam, myFam, exBase, ty, dy, R)
+% v4.1 entry-descent de-confliction. R14 pins every stored tail to the
+% canonical elbow (dst_x-10, dst_y), so all lines entering a block-edge
+% column used to descend the SAME vertical lane and stack on top of each
+% other. Probe-verified shape shift: descend at X < dx-10, then run along
+% the dst row to the canonical elbow -- R14 keeps it orthogonal. Prefer the
+% canonical column; step left in 10 px while another family's V segment
+% overlaps the descent span, or the dst-row rung would overlap another
+% family's H segment, or blocks/labels sit on the descent. Returns the
+% first wire-occupied-but-unblocked column as soft fallback, [] when every
+% candidate is block-blocked (caller skips the lane).
+spanLo = min(ty, dy);
+spanHi = max(ty, dy);
+X = [];
+Xfb = [];
+for k = 0:6
+    xc = exBase - 10 * k;
+    if seg_blocked_v(spanLo, spanHi, xc, R)
+        continue;
+    end
+    occ = false;
+    for w = 1:size(wireA, 1)
+        if wireFam(w) == myFam, continue; end
+        sw = wireA(w, :);
+        if sw(1) == sw(3) && abs(sw(1) - xc) < 0.5
+            lo = max(min(sw(2), sw(4)), spanLo);
+            hi = min(max(sw(2), sw(4)), spanHi);
+            if hi - lo > 6
+                occ = true;
+                break;
+            end
+        end
+        if sw(2) == sw(4) && abs(sw(2) - dy) < 0.5
+            lo = max(min(sw(1), sw(3)), min(xc, exBase));
+            hi = min(max(sw(1), sw(3)), max(xc, exBase));
+            if hi - lo > 6
+                occ = true;
+                break;
+            end
+        end
+    end
+    if isempty(Xfb)
+        Xfb = xc;
+    end
+    if ~occ
+        X = xc;
+        break;
+    end
+end
+if isempty(X)
+    X = Xfb;
+end
 end
 
 % ------------------------------------------------------------------

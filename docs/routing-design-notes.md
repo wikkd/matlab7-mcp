@@ -77,6 +77,21 @@ connector-routing literature:
    targets. Verified on Comm_Link / EV_Drag_Power / Exp7_Rint_Battery:
    super_before = super_after = 0 on all three (soft avoidance alone), 0
    failed, 0 non-orthogonal, sim anchors identical.
+   **v4.1 (2026-10-31) — entry-lane de-confliction**, the blind spot the
+   wire map could not see: R14 pins the stored tail to the canonical elbow
+   `(dst_x-10, dst_y)` (README law 11), so every line entering a block-edge
+   column descended the SAME vertical — 13 cross-signal superpositions on
+   EV_Energy_Range alone, invisible to `wire_count_super` because both
+   sides are R14-forced segments. `ex_pick` now steps the descent column
+   left in 10 px while another family occupies the descent span (or the
+   dst-row rung would overlap, or blocks/labels sit on it), and the stored
+   tail ends at the canonical elbow explicitly — R14 rewrites the last
+   stored point to the elbow otherwise and shears a diagonal (this broke
+   53 lines at first attempt; probes caught it). Vertical-entry ports whose
+   bare probe discovers no elbow keep the unshifted descent. Independent
+   audit: 13 → 0 cross-family overlaps, 3 → 0 diagonals, sim anchors
+   (E/SOC/mileage) bit-identical; Comm_Link / exp6 / exp7 regression all 0
+   failed, cross-family 0.
 2. **A\* middle-section search**: keep the R14-compatible serializers
    (SAFE-Z / anchor-lane / go-around with the calibrated elbow tail — they
    exist because of the storage laws, see README "R14 line-semantics laws"),
