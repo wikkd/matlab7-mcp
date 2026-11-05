@@ -14,15 +14,22 @@ global MCP_PROGRESS_FILE
 f = '';
 if ~isempty(MCP_PROGRESS_FILE), f = MCP_PROGRESS_FILE; end
 if isempty(f)
-    % v3.2.1: three-level fallback. R14 globals published from inside a try
-    % (worker boot does exactly that) proved unreliable across calls, and
-    % user code may run clear/clear all mid-eval which wipes globals too.
-    % The old pwd fallback then leaked progress.json into the user's project
-    % directory while matlab_progress kept reporting "(no progress
-    % reported)" for the whole run (observed 2026-11-04 on a multi-cycle
-    % RDR eval). Prefer the directory this file lives in: the server
-    % addpath'd it at boot and reads progress from its own work dir, which
-    % is the same folder in the standard single-directory layout.
+    % v3.2.2: root-graphics appdata survives clear/clear all on R14
+    % (probe-verified: setappdata(0,...) read back intact after clear all),
+    % so the worker pins the progress path there at boot and re-pins it on
+    % every request. This is the level that still holds when user code
+    % wiped the global mid-eval - including isolated work dirs, where the
+    % which() level below would point at the server's own folder instead
+    % of the actual work dir.
+    a = getappdata(0, 'MCP_PROGRESS_FILE');
+    if ischar(a) && ~isempty(a), f = a; end
+end
+if isempty(f)
+    % v3.2.1: which()-based fallback for the standard single-directory
+    % layout (server dir == work dir). The original v3.2.0 pwd fallback
+    % leaked progress.json into user project dirs while matlab_progress
+    % kept reporting "(no progress reported)" for the whole run (observed
+    % 2026-11-04 on a multi-cycle RDR eval).
     p = which('mcp_progress');
     if ~isempty(p), f = fullfile(fileparts(p), 'progress.json'); end
 end

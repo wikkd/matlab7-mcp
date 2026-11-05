@@ -62,6 +62,11 @@ end
 global MCP_PROGRESS_FILE
 MCP_PROGRESS_FILE = fullfile(reqdir, 'progress.json');
 if exist(MCP_PROGRESS_FILE, 'file'), delete(MCP_PROGRESS_FILE); end
+% v3.2.2: pin the path on the root graphics object as well - appdata
+% survives clear/clear all (which wipe globals), probe-verified on R14.
+try
+    setappdata(0, 'MCP_PROGRESS_FILE', MCP_PROGRESS_FILE);
+end
 
 verstr = '';
 try
@@ -154,6 +159,10 @@ while true
     % clear/clear all, which wipes global bindings (and R14 globals set via
     % evalin+try went missing even without an explicit clear).
     MCP_PROGRESS_FILE = fullfile(reqdir, 'progress.json');
+    % v3.2.2: keep the appdata pin in sync (survives clear all).
+    try
+        setappdata(0, 'MCP_PROGRESS_FILE', MCP_PROGRESS_FILE);
+    end
     if stopReq
         % Leaving? Also drop the progress file so a later worker does not
         % inherit this session's last progress numbers.
@@ -838,7 +847,7 @@ req = struct('id', 0, 'cmd', 'ping', 'code', '', 'var', '', 'file', '', ...
     'fig', 0, 'dpi', 0, 'close', 0, 'enc', 'auto', 'content', '', 'value_json', '', ...
     'model', '', 'fix', 0, 'max_rows', 0, 'close_figs', 0, 'close_models', 0, ...
     'text', '', 'spacing', 0, 'margin', 0, 'sys', '', 'xgap', 0, 'ygap', 0, ...
-    'reply', '', 'group', '');
+    'reply', '', 'group', '', 'pattern', '');
 p = json_decode(raw);
 if isfield(p, 'id'),          req.id = p.id;   end
 if isfield(p, 'cmd'),         req.cmd = p.cmd; end
@@ -864,6 +873,7 @@ if isfield(p, 'xgap'),        req.xgap = p.xgap; end
 if isfield(p, 'ygap'),        req.ygap = p.ygap; end
 if isfield(p, 'reply'),       req.reply = p.reply; end
 if isfield(p, 'group'),       req.group = p.group; end
+if isfield(p, 'pattern'),     req.pattern = p.pattern; end
 end
 
 function mcp_assert_log(grp, what, passed, detail)

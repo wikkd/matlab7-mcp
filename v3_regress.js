@@ -103,6 +103,20 @@ async function main() {
   const rsel = await T('eval-selective-clear-ok', true, () => tool('matlab_eval', { code: 'v3keep = 1; clear v3keep; disp(42)' }));
   if (rsel && /bare "clear"/i.test(rsel.text)) { console.log('FAIL  clear-warning-on-selective', rsel.text.slice(0, 160)); results.fail++; }
 
+  // ---- v3.2 batch grading: matlab_assert / matlab_assert_report ----
+  await tool('matlab_eval', { code: 'v3ass = 41; disp(41);' });
+  await T('assert-pass', true, () => tool('matlab_assert', { code: 'v3ass == 41', text: 'v3ass is 41', group: 'regress' }));
+  // a false expression is a FAIL result (isError), not a tool error
+  await T('assert-fail', false, () => tool('matlab_assert', { code: 'v3ass == 99', text: 'v3ass is 99' }));
+  // a throwing expression counts as FAIL and carries the error text
+  const rath = await T('assert-throw-is-fail', false, () => tool('matlab_assert', { code: "error('intentional throw')", text: 'throws' }));
+  if (rath && !/threw/.test(rath.text)) { console.log('FAIL  assert-throw-error-missing', rath.text.slice(0, 160)); results.fail++; }
+  const rarp = await T('assert-report-1of3', true, () => tool('matlab_assert_report', { clear: true }));
+  if (rarp && !/1\/3 passed/.test(rarp.text)) { console.log('FAIL  assert-report-count', rarp.text.slice(0, 160)); results.fail++; }
+  // after clear=true the log really is empty
+  const rarp2 = await T('assert-report-cleared', true, () => tool('matlab_assert_report', {}));
+  if (rarp2 && !/0\/0 passed/.test(rarp2.text)) { console.log('FAIL  assert-report-not-cleared', rarp2.text.slice(0, 160)); results.fail++; }
+
   // check tool
   const rc = await T('check-clean', true, () => tool('matlab_check', { code: 'x = 1; y = x + 1; disp(y)' }));
   if (rc && !rc.text.includes('OK')) { console.log('FAIL  check-clean-message', rc.text); results.fail++; }
@@ -200,6 +214,13 @@ async function main() {
     "disp('wire ok');",
   ].join('\n') }));
   if (rck && !rck.text.includes('wire ok')) { console.log('FAIL  sim_route-wire-lost', rck.text); results.fail++; }
+  // v3.2 disk-level scan: find text in the saved .mdl without loading it
+  const rsc = await T('sim-scan', true, () => tool('matlab_sim_scan', { path: path.join(WORK, 'v3tst.mdl'), pattern: 'Integrator' }));
+  if (rsc) {
+    const m = rsc.text.match(/(\d+) match\(es\)/);
+    if (!m || parseInt(m[1], 10) < 1) { console.log('FAIL  sim-scan-nomatch', rsc.text.slice(0, 160)); results.fail++; }
+    else console.log(`PASS  sim-scan-matches (${m[1]})`);
+  }
   await T('sim-teardown', true, () => tool('matlab_eval', { code: "close_system('v3tst',0); delete('v3tst.mdl'); disp('cleaned');" }));
 
   // cleanup tool
@@ -228,7 +249,37 @@ async function main() {
   const rpn = await T('progress-reset-by-new-eval', true, () => tool('matlab_progress', {}));
   if (rpn && !rpn.text.includes('no progress reported')) { console.log('FAIL  progress-not-reset', rpn.text); results.fail++; }
 
+  // ---- v3.2.2 progress-path pin: clear all + foreign cwd must not derail
+  // progress.json off the work dir (D11 regression case) ----
+  const wks = WORK.replace(/\\/g, '/');
+  const rca = await T('eval-clear-all-progress', true, () => tool('matlab_eval', { code: [
+    'cd(tempdir);',
+    'clear all;',
+    "mcp_progress(0.42, 'after clear all');",
+    `cd('${wks}');`,
+    "disp('progress-after-clear-all-ok');",
+  ].join('\n'), timeout_sec: 60 }));
+  if (rca && !rca.text.includes('progress-after-clear-all-ok')) { console.log('FAIL  eval-clear-all-progress-output', rca.text); results.fail++; }
+  const rpc3 = await T('progress-survives-clear-all', true, () => tool('matlab_progress', {}));
+  if (rpc3 && !rpc3.text.includes('42')) { console.log('FAIL  progress-lost-after-clear-all', rpc3.text); results.fail++; }
+
   await T('status', true, () => tool('matlab_status', {}));
+
+  // ---- v3.2 matlab_last history forms (list / job_id) ----
+  await T('eval-for-last', true, () => tool('matlab_eval', { code: "disp('last-probe-marker');" }));
+  const rll = await T('last-list', true, () => tool('matlab_last', { list: true }));
+  let aJobId = null;
+  if (rll) {
+    const ids = [...rll.text.matchAll(/id=(\d+)/g)].map((m) => parseInt(m[1], 10));
+    if (!ids.length) { console.log('FAIL  last-list-no-ids', rll.text.slice(0, 160)); results.fail++; }
+    else { aJobId = ids[ids.length - 1]; console.log(`PASS  last-list-rows (${ids.length} rows)`); }
+  }
+  if (aJobId !== null) {
+    const rlj = await T('last-jobid', true, () => tool('matlab_last', { job_id: aJobId }));
+    if (rlj && !rlj.text.includes(`id=${aJobId}`)) { console.log('FAIL  last-jobid-body', rlj.text.slice(0, 160)); results.fail++; }
+    // an id outside the ring buffer is an expected error
+    await T('last-jobid-missing', false, () => tool('matlab_last', { job_id: 987654321 }));
+  }
 
   console.log(`\n==== RESULT: ${results.pass} pass, ${results.fail} fail ====`);
   // teardown: drop artifacts this round wrote into the repo dir (the ascii

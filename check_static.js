@@ -6,6 +6,9 @@
 //   3. README badges/tables mention the same tool count as the code
 //   4. README regression count matches v3_regress.js T-assertions + subchecks
 //   5. no leftover username/private info in tracked bridge files
+//   6. every request key mcp-server.js sends exists in mcp_worker.m parse_req
+//      (v3.2.2: matlab_sim_scan shipped broken because 'pattern' was missing
+//      from the parser whitelist and no test exercised the tool)
 // Exits 0 on all-pass, 1 on any failure. Used by CI and pre-push.
 const fs = require('fs');
 const path = require('path');
@@ -71,6 +74,18 @@ for (const f of fs.readdirSync(ROOT).filter((x) => /\.(js|m|md)$/.test(x) && x !
   const hit = PRIV.find((p) => txt.includes(p));
   check(`privacy:${f}`, !hit, hit ? `contains "${hit}"` : '');
 }
+
+// ---- 6. protocol field whitelist: server keys vs worker parse_req ---------
+const workerSrc = fs.readFileSync(path.join(ROOT, 'mcp_worker.m'), 'utf8');
+const structDef = (workerSrc.match(/req = struct\(([\s\S]*?)\);/) || [])[1] || '';
+const have = new Set([...structDef.matchAll(/'([a-z_]+)'/g)].map((m) => m[1]));
+const sent = new Set();
+for (const m of server.matchAll(/workerRequest\(\{([\s\S]*?)\}/g)) {
+  for (const k of [...m[1].matchAll(/([a-z_]+):/g)]) sent.add(k[1]);
+}
+const missingKeys = [...sent].filter((k) => !have.has(k));
+check('protocol:request-keys', missingKeys.length === 0,
+  missingKeys.length ? 'missing in parse_req: ' + missingKeys.join(',') : '');
 
 console.log(`\n==== STATIC: ${fail === 0 ? 'ALL PASS' : fail + ' FAIL'} ====`);
 process.exit(fail > 0 ? 1 : 0);

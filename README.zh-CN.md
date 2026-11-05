@@ -10,7 +10,7 @@
 ![Node](https://img.shields.io/badge/node-%E2%89%A516-green)
 ![MATLAB](https://img.shields.io/badge/MATLAB-7.0%20(R14)%20%7C%202004-lightgrey)
 ![License](https://img.shields.io/badge/license-MIT-yellow)
-![Tests](https://img.shields.io/badge/regression-47%2F47%20pass-brightgreen)
+![Tests](https://img.shields.io/badge/regression-59%2F59%20pass-brightgreen)
 
 </div>
 
@@ -130,7 +130,7 @@ README，全部由你自己完成：
    ZCode：config.json 的 mcp.servers）。如果多个 MCP 客户端共用这个仓库
    目录，给每个客户端单独克隆一份——文件协议是单通道。
 4. 验证桥接：用 Node 运行仓库自带的回归测试（node v3_regress.js <仓库目录>），
-   预期 47/47 断言通过。如果截图相关断言失败，说明窗口抓取需要交互式桌面
+   预期 59/59 断言通过。如果截图相关断言失败，说明窗口抓取需要交互式桌面
    会话，报告其余哪些断言通过即可。
 5. 汇报：仓库路径、MATLAB 根目录、改了哪个配置文件、回归结果，以及还需要
    我手动做什么（重启客户端）。
@@ -257,11 +257,30 @@ Sugiyama 式分层布局：① 从**目标侧**枚举边（分支边只有从 In
    数据；每次写后面跟一个读回断言。多个"改好了其实没改好"的 bug 都是这样抓出来的。
 7. **长任务要有进度通道**——并且当心用户代码里的裸 `clear`：它会同时清掉进度
    打点和循环变量，把失败伪装成成功（eval 工具现在会检测并警告）。
-8. **回归测试是每次重构的安全网。**47 组断言跑在真 stdio server + 真 MATLAB
+8. **回归测试是每次重构的安全网。**59 组断言跑在真 stdio server + 真 MATLAB
    上（GBK 往返、NaN 序列化、幽灵线审计、clear 警告与 progress 生命周期），
    让 v3 大修零伤亡落地。
 
 ## 版本演进
+
+### v3.2.2 — 测试网补全（56 例 + 隔离/负路径驱动）
+
+v3.2/v3.2.1 的功能此前只临时验证过——重构把它们改坏时，旧套件照样全绿。
+现在每个工具和协议失败路径都有回归覆盖：
+
+- `v3_regress.js` 从 44 例扩到 **56 例工具用例**（59 组断言）：批量判分
+  （`matlab_assert` / `matlab_assert_report`，含"抛错=FAIL"规则）、
+  `matlab_sim_scan`、`matlab_last` 的 `list` / `job_id` / 越界 id 形态，
+  以及 D11 回归用例——外来 cwd 里 `clear all` 不得把 `progress.json` 带偏。
+- 新增 `v32_test_isolation.js`（独立隔离 `MCP_WORK_DIR`，双 server）：
+  boot 清扫删光植入的死实例垃圾、运行中绝不触碰活实例文件；两个 server
+  实例共享一个 worker 且各自历史文件互不串线（reply 标签）；协议负路径
+  （错配 id 的陈旧 res、畸形请求 JSON、残留 busy.json）都不得卡死 worker。
+- 写测试过程顺手揪出一个真缺陷：v3.2.1 的 `which()` 回退只在"server 目录
+  =工作目录"布局下正确。现在 worker 在 boot 时和每个请求末把 progress
+  路径同时钉在**根图形对象 appdata** 上（`setappdata(0, …)`）——R14 探针
+  实证根 appdata 能扛住 `clear all`，global 不能。`mcp_progress` 在
+  `which()` 之前先读它。
 
 ### v3.2.1 — 运行时卫生 + progress 路径加固
 
@@ -430,14 +449,16 @@ worker 空闲时可安全删除。
 
 ```
 node check_static.js          # 无需 MATLAB：ASCII/工具数/README/隐私一致性
-node v3_regress.js <仓库目录>   # 全量回归：真 server + 真 R14 worker，47 组断言
+node v3_regress.js <仓库目录>   # 全量回归：真 server + 真 R14 worker，59 组断言
+node v32_test_isolation.js    # 隔离工作目录：boot 清扫、双实例共享、协议负路径
 ```
 
-回归测试起真 stdio server + 真 MATLAB worker，跑 47 组断言覆盖全部 26 个工具
+回归测试起真 stdio server + 真 MATLAB worker，跑 59 组断言覆盖全部 26 个工具
 （当前全过）。需要交互桌面会话（窗口截图）。`v3_smoke_window.js` 单测截图
 链路；`v3_smoke_arrange.js <模型路径>` 在任意 Simulink 模型上单测
-arrange+route 管线。CI（GitHub Actions）在每次 push 时跑静态层；MATLAB 层
-依赖真机 R14，留在本地跑。
+arrange+route 管线。隔离驱动在独立 `MCP_WORK_DIR` 里运行，额外验证 boot
+卫生、实例共享与协议失败路径。CI（GitHub Actions）在每次 push 时跑静态层；
+MATLAB 层依赖真机 R14，留在本地跑。
 
 ## 生命周期
 

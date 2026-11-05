@@ -11,7 +11,7 @@
 ![Node](https://img.shields.io/badge/node-%E2%89%A516-green)
 ![MATLAB](https://img.shields.io/badge/MATLAB-7.0%20(R14)%20%7C%202004-lightgrey)
 ![License](https://img.shields.io/badge/license-MIT-yellow)
-![Tests](https://img.shields.io/badge/regression-47%2F47%20pass-brightgreen)
+![Tests](https://img.shields.io/badge/regression-59%2F59%20pass-brightgreen)
 
 </div>
 
@@ -142,7 +142,7 @@ https://github.com/wikkd/matlab7-mcp. Do all of this yourself:
    mcp.servers). If two MCP clients share this repo folder, give each its
    own clone — the file protocol is a single channel.
 4. Verify the bridge: run the repo's regression suite with Node
-   (node v3_regress.js <repo folder>) — expect 47/47 assertions passing.
+   (node v3_regress.js <repo folder>) — expect 59/59 assertions passing.
    If a capture-related assertion fails, note that window capture needs an
    interactive desktop session and report which assertions still pass.
 5. Report back: repo path, MATLAB root, config file edited, regression
@@ -449,12 +449,36 @@ Real course models, sim outputs compared before/after:
 7. **Long tasks need a progress channel** — and beware user code that calls a
    bare `clear`, which wipes both the progress marker and your loop variables,
    disguising failures as successes (the eval tool now warns about it).
-8. **Regression tests are the safety net for every refactor.** 47 assertions
+8. **Regression tests are the safety net for every refactor.** 59 assertions
    over a real stdio server + real MATLAB (GBK round-trips, NaN serialization,
    ghost audits, clear-warning and progress lifecycle) made the v3 overhaul of
    26 tools land without casualties.
 
 ## Changelog
+
+### v3.2.2 — test suite closes the coverage gap (56 cases + isolation/negative driver)
+
+The v3.2/v3.2.1 features had only been exercised ad hoc — a refactor could
+have broken them with the old suite still green. Every tool and the
+protocol's failure modes are now under regression:
+
+- `v3_regress.js` grew from 44 to **56 tool cases** (59 assertions): batch
+  grading (`matlab_assert` / `matlab_assert_report`, incl. the
+  throwing-is-FAIL rule), `matlab_sim_scan`, `matlab_last` history forms
+  (`list` / `job_id` / out-of-ring id), and the D11 regression case —
+  `clear all` in a foreign cwd must not derail `progress.json`.
+- New `v32_test_isolation.js` (own isolated `MCP_WORK_DIR`, two servers):
+  boot sweep removes planted dead-instance junk and never touches live
+  files mid-session; two server instances share one worker with
+  per-instance history isolation (reply tags); protocol negatives — stale
+  res with mismatched id, malformed request JSON, residual busy.json —
+  must not wedge the worker.
+- One real fix fell out of writing the tests: the v3.2.1 `which()` fallback
+  in `mcp_progress` is only correct when the server dir IS the work dir.
+  The worker now also pins the progress path on the **root graphics
+  object** (`setappdata(0, …)`) at boot and after every request —
+  probe-verified on R14 that root appdata survives `clear all`, globals do
+  not. `mcp_progress` consults it before the `which()` level.
 
 ### v3.2.1 — runtime hygiene + progress-path hardening
 
@@ -639,14 +663,17 @@ Two layers, both runnable from a fresh clone:
 
 ```
 node check_static.js          # no MATLAB needed: ASCII/tool-count/README/privacy consistency
-node v3_regress.js <repo>     # full regression: real server + real R14 worker, 47 assertions
+node v3_regress.js <repo>     # full regression: real server + real R14 worker, 59 assertions
+node v32_test_isolation.js    # isolated work dir: boot sweep, 2-instance sharing, protocol negatives
 ```
 
-The regression boots a real stdio server + real MATLAB worker and runs 46
+The regression boots a real stdio server + real MATLAB worker and runs 59
 assertions across all 26 tools (currently all passing). Requires an
 interactive desktop session (window capture). `v3_smoke_window.js` tests the
 capture chain; `v3_smoke_arrange.js <model path>` tests the arrange+route
-pipeline on any Simulink model. CI (GitHub Actions) runs the static layer on
+pipeline on any Simulink model. The isolation driver runs in its own
+`MCP_WORK_DIR` and additionally proves boot hygiene, instance sharing and
+the protocol's failure modes. CI (GitHub Actions) runs the static layer on
 every push; the MATLAB layer stays local because it needs a real R14 install.
 
 ## Lifecycle

@@ -155,7 +155,7 @@ function handleMcpLine(line) {
     rpcResult(msg.id, {
       protocolVersion: msg.params?.protocolVersion || '2024-11-05',
       capabilities: { tools: {} },
-      serverInfo: { name: 'matlab7-mcp-server', version: '3.2.1' },
+      serverInfo: { name: 'matlab7-mcp-server', version: '3.2.2' },
     });
     return;
   }
