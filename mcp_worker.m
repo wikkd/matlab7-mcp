@@ -7,14 +7,21 @@ function mcp_worker(reqfile, resfile, pidfile, busyfile)
 %                "fig":h,"dpi":N,"close":0/1,"enc":"auto|gbk|utf8",
 %                "content":"...","value_json":"...","model":"name",
 %                "fix":0/1,"max_rows":N,"close_figs":0/1,"close_models":0/1,
-%                "text":"..."}
+%                "text":"...","pattern":"regexp","group":"...",
+%                "spacing":N,"margin":N,"sys":"...","xgap":N,"ygap":N,
+%                "reply":"i<pid>" (instance channel tag, v3.2 isolation)}
 %     response: {"id":N,"ok":true,"stdout":"...","value":<json>}
 %             or {"id":N,"ok":false,"error":"...","stdout":"..."}
 %   Commands: ping stop eval run_file get set ws figs put_png
 %             write_file read_file dir
 %             v3: check sim_info sim_clean summary closeall append
+%             v3.2: assert assert_report sim_scan sim_route sim_arrange
 %   Requires mcp2json.m and json_decode.m on the path (same folder).
 %   Optional: mcp_progress.m (long-eval progress reporting).
+%
+%   v3.3.0 refactor: response building goes through the resp_ok / resp_val /
+%   resp_err / resp_out / resp_err_out helpers (wire format unchanged), the
+%   eval case moved to do_eval, and write_file/append share enc_text_bytes.
 
 if nargin < 1 || isempty(reqfile),  reqfile  = 'req.json';  end
 if nargin < 2 || isempty(resfile),  resfile  = 'res.json';  end
@@ -241,38 +248,14 @@ cmd = lower(req.cmd);
 
 switch cmd
     case 'ping'
-        resp = ['{"id":' num2str(req.id) ',"ok":true,"stdout":"pong"}'];
+        resp = resp_ok(req.id, 'pong');
 
     case 'stop'
-        write_resp(resfile, ['{"id":' num2str(req.id) ',"ok":true,"stdout":"bye"}']);
+        write_resp(resfile, resp_ok(req.id, 'bye'));
         stopReq = true;
 
     case 'eval'
-        dtxt = [tempname, '.diary'];
-        [good, txt] = eval_capture(req.code, dtxt, '');
-        % v3.2: on failure with console output, append the diary tail (last
-        % 30 lines) to the error so one call shows both the error and the
-        % console context that led to it - no follow-up eval needed.
-        if ~good && ~isempty(strtrim(txt))
-            resp = ['{"id":' num2str(req.id) ',"ok":' bool2str(good) ...
-                ',"stdout":' jstr(txt) ...
-                ',"error":' jstr(['(console tail, last 30 lines)' char(10) diary_tail(txt, 30)]) '}'];
-        else
-            % v3: warn when user code contains a bare clear/clear all - it wipes
-            % the caller's loop variables too (classic "Reference to a cleared
-            % variable" failure seen with eval'd scripts in for-loops).
-            % NOTE: bare clear/clear all always makes the eval FAIL (good=false),
-            % so the warning is attached when the code matches, regardless of ok.
-            hasClearWarn = ~isempty(strfind(req.code, 'clear all')) || ...
-                ~isempty(regexpi(req.code, '(^|[\n;,])\s*clear\s*([;,\n]|$)'));
-            if hasClearWarn
-                txt = [txt, char(10), ...
-                    'NOTE: code contains bare "clear"/"clear all" - it also wipes loop ', ...
-                    'variables and workspace data. Use "clear <name>" or clear(''vars'') selectively.'];
-            end
-            resp = ['{"id":' num2str(req.id) ',"ok":' bool2str(good) ...
-                ',"stdout":' jstr(txt) '}'];
-        end
+        resp = do_eval(req);
 
     case 'run_file'
         % Run a .m file: fresh (clear cached function by name), auto cd into
@@ -338,25 +321,25 @@ switch cmd
                 ',"cleared":' bool2str(clearIt) ...
                 ',"lines":' mcp2json(lines) '}}'];
         catch
-            resp = ['{"id":' num2str(req.id) ',"ok":false,"error":' jstr(lasterr) '}'];
+            resp = resp_err(req.id, lasterr);
         end
 
     case 'get'
         try
             v = evalin('base', req.var);
             jj = mcp2json(v);
-            resp = ['{"id":' num2str(req.id) ',"ok":true,"value":' jj '}'];
+            resp = resp_val(req.id, jj);
         catch
-            resp = ['{"id":' num2str(req.id) ',"ok":false,"error":' jstr(lasterr) '}'];
+            resp = resp_err(req.id, lasterr);
         end
 
     case 'set'
         try
             v = json_decode(req.value_json);
             assignin('base', req.var, v);
-            resp = ['{"id":' num2str(req.id) ',"ok":true,"stdout":"set"}'];
+            resp = resp_ok(req.id, 'set');
         catch
-            resp = ['{"id":' num2str(req.id) ',"ok":false,"error":' jstr(lasterr) '}'];
+            resp = resp_err(req.id, lasterr);
         end
 
     case 'ws'
@@ -370,9 +353,9 @@ switch cmd
                     ',"size":' jstr(mat2str(size(v))) '}']; %#ok<AGROW>
             end
             arr = join_parts(parts);
-            resp = ['{"id":' num2str(req.id) ',"ok":true,"value":[' arr ']}'];
+            resp = resp_val(req.id, ['[' arr ']']);
         catch
-            resp = ['{"id":' num2str(req.id) ',"ok":false,"error":' jstr(lasterr) '}'];
+            resp = resp_err(req.id, lasterr);
         end
 
     case 'figs'
@@ -389,9 +372,9 @@ switch cmd
                     ',"name":' jstr(nm) ',"visible":' jstr(vis) '}'];
             end
             arr = join_parts(parts);
-            resp = ['{"id":' num2str(req.id) ',"ok":true,"value":[' arr ']}'];
+            resp = resp_val(req.id, ['[' arr ']']);
         catch
-            resp = ['{"id":' num2str(req.id) ',"ok":false,"error":' jstr(lasterr) '}'];
+            resp = resp_err(req.id, lasterr);
         end
 
     case 'put_png'
@@ -413,9 +396,9 @@ switch cmd
                     ',"isdir":' bool2str(d(k).isdir) '}'];
             end
             arr = join_parts(parts);
-            resp = ['{"id":' num2str(req.id) ',"ok":true,"value":[' arr ']}'];
+            resp = resp_val(req.id, ['[' arr ']']);
         catch
-            resp = ['{"id":' num2str(req.id) ',"ok":false,"error":' jstr(lasterr) '}'];
+            resp = resp_err(req.id, lasterr);
         end
 
     % ---------------- v3 commands ----------------
@@ -425,13 +408,12 @@ switch cmd
         try
             issues = mcp_check(req.code);
             if isempty(issues)
-                resp = ['{"id":' num2str(req.id) ',"ok":true,"value":{"clean":true,"issues":""}}'];
+                resp = resp_val(req.id, '{"clean":true,"issues":""}');
             else
-                resp = ['{"id":' num2str(req.id) ',"ok":true,"value":{"clean":false,"issues":' ...
-                    jstr(issues) '}}'];
+                resp = resp_val(req.id, ['{"clean":false,"issues":' jstr(issues) '}']);
             end
         catch
-            resp = ['{"id":' num2str(req.id) ',"ok":false,"error":' jstr(lasterr) '}'];
+            resp = resp_err(req.id, lasterr);
         end
 
     case 'sim_scan'
@@ -440,30 +422,27 @@ switch cmd
         % easier here). Also handy when a model is too broken to load.
         try
             rep = mcp_sim_scan(req.model, req.pattern);
-            jj = mcp2json(rep);
-            resp = ['{"id":' num2str(req.id) ',"ok":true,"value":' jj '}'];
+            resp = resp_val(req.id, mcp2json(rep));
         catch
-            resp = ['{"id":' num2str(req.id) ',"ok":false,"error":' jstr(lasterr) '}'];
+            resp = resp_err(req.id, lasterr);
         end
 
     case 'sim_info'
         % Simulink model integrity audit (ghost lines, unconnected ports).
         try
             rep = mcp_sim_audit(req.model, struct('fix', req.fix ~= 0));
-            jj = mcp2json(rep);
-            resp = ['{"id":' num2str(req.id) ',"ok":true,"value":' jj '}'];
+            resp = resp_val(req.id, mcp2json(rep));
         catch
-            resp = ['{"id":' num2str(req.id) ',"ok":false,"error":' jstr(lasterr) '}'];
+            resp = resp_err(req.id, lasterr);
         end
 
     case 'sim_clean'
         % Remove orphan line segments from a model and save it.
         try
             rep = mcp_sim_clean(req.model);
-            jj = mcp2json(rep);
-            resp = ['{"id":' num2str(req.id) ',"ok":true,"value":' jj '}'];
+            resp = resp_val(req.id, mcp2json(rep));
         catch
-            resp = ['{"id":' num2str(req.id) ',"ok":false,"error":' jstr(lasterr) '}'];
+            resp = resp_err(req.id, lasterr);
         end
 
     case 'sim_route'
@@ -477,10 +456,9 @@ switch cmd
                 o.margin = req.margin;
             end
             rep = mcp_sim_route(req.model, o);
-            jj = mcp2json(rep);
-            resp = ['{"id":' num2str(req.id) ',"ok":true,"value":' jj '}'];
+            resp = resp_val(req.id, mcp2json(rep));
         catch
-            resp = ['{"id":' num2str(req.id) ',"ok":false,"error":' jstr(lasterr) '}'];
+            resp = resp_err(req.id, lasterr);
         end
 
     case 'sim_arrange'
@@ -494,10 +472,9 @@ switch cmd
                 o.ygap = req.ygap;
             end
             rep = mcp_sim_arrange(req.model, o);
-            jj = mcp2json(rep);
-            resp = ['{"id":' num2str(req.id) ',"ok":true,"value":' jj '}'];
+            resp = resp_val(req.id, mcp2json(rep));
         catch
-            resp = ['{"id":' num2str(req.id) ',"ok":false,"error":' jstr(lasterr) '}'];
+            resp = resp_err(req.id, lasterr);
         end
 
     case 'summary'
@@ -518,16 +495,42 @@ end
 end
 
 % ------------------------------------------------------------------
+function resp = do_eval(req)
+% Run user code in the base workspace with console capture (diary).
+% - On failure WITH console output, append the diary tail (last 30 lines) to
+%   the error so one call shows both the error and the console context that
+%   led to it - no follow-up eval needed.
+% - Warn when the code contains a bare clear/clear all: it wipes the
+%   caller's loop variables and the progress marker too (classic "Reference
+%   to a cleared variable" failure in eval'd loop scripts). The eval itself
+%   still succeeds, so the note rides on a successful response.
+dtxt = [tempname, '.diary'];
+[good, txt] = eval_capture(req.code, dtxt, '');
+if ~good && ~isempty(strtrim(txt))
+    resp = resp_err_out(req.id, txt, ['(console tail, last 30 lines)' char(10) diary_tail(txt, 30)]);
+    return;
+end
+hasClearWarn = ~isempty(strfind(req.code, 'clear all')) || ...
+    ~isempty(regexpi(req.code, '(^|[\n;,])\s*clear\s*([;,\n]|$)'));
+if hasClearWarn
+    txt = [txt, char(10), ...
+        'NOTE: code contains bare "clear"/"clear all" - it also wipes loop ', ...
+        'variables and workspace data. Use "clear <name>" or clear(''vars'') selectively.'];
+end
+resp = resp_out(req.id, good, txt);
+end
+
+% ------------------------------------------------------------------
 function [stopReq, resp] = do_run_file(req, resfile)
 stopReq = false;
 f = req.file;
 if isempty(f) || ~exist(f, 'file')
-    resp = ['{"id":' num2str(req.id) ',"ok":false,"error":' jstr(['file not found: ' f]) '}'];
+    resp = resp_err(req.id, ['file not found: ' f]);
     return;
 end
 [pth, nm, ext] = fileparts(f);
 if ~strcmpi(ext, '.m')
-    resp = ['{"id":' num2str(req.id) ',"ok":false,"error":' jstr(['not a .m file: ' ext]) '}'];
+    resp = resp_err(req.id, ['not a .m file: ' ext]);
     return;
 end
 % Only clear the cache for function files; scripts are re-read each run and
@@ -548,8 +551,7 @@ code = ['oldcd = pwd;', char(10), preamble, ...
     'cd(oldcd);'];
 dtxt = [tempname, '.diary'];
 [good, txt] = eval_capture(code, dtxt, '');
-resp = ['{"id":' num2str(req.id) ',"ok":' bool2str(good) ...
-    ',"stdout":' jstr(txt) '}'];
+resp = resp_out(req.id, good, txt);
 end
 
 % ------------------------------------------------------------------
@@ -561,14 +563,14 @@ try
     if isempty(fig) || fig <= 0
         hs = findobj('Type', 'figure');
         if isempty(hs)
-            resp = ['{"id":' num2str(req.id) ',"ok":false,"error":"no open figure (run plotting code via matlab_eval first)"}'];
+            resp = resp_err(req.id, 'no open figure (run plotting code via matlab_eval first)');
             return;
         end
         fig = max(hs);
     else
         has = evalin('base', sprintf('ishandle(%d)', fig));
         if ~has
-            resp = ['{"id":' num2str(req.id) ',"ok":false,"error":"no figure with handle ' num2str(fig) ' (run plotting code via matlab_eval first)"}'];
+            resp = resp_err(req.id, ['no figure with handle ' num2str(fig) ' (run plotting code via matlab_eval first)']);
             return;
         end
     end
@@ -582,9 +584,9 @@ try
             evalin('base', ['close(' num2str(double(fig)) ');']);
         end
     end
-    resp = ['{"id":' num2str(req.id) ',"ok":true,"stdout":"png"}'];
+    resp = resp_ok(req.id, 'png');
 catch
-    resp = ['{"id":' num2str(req.id) ',"ok":false,"error":' jstr(lasterr) '}'];
+    resp = resp_err(req.id, lasterr);
 end
 end
 
@@ -596,42 +598,26 @@ resp = '';
 try
     f = req.file;
     if isempty(f)
-        resp = ['{"id":' num2str(req.id) ',"ok":false,"error":"empty file path"}'];
+        resp = resp_err(req.id, 'empty file path');
         return;
     end
-    [pth, nm, ext] = fileparts(f);
-    lowerext = lower(ext);
-    if any(strcmp(lowerext, {'.mat', '.mdl', '.fig', '.slx', '.mexw', '.mex'}))
-        resp = ['{"id":' num2str(req.id) ',"ok":false,"error":' jstr(['refusing to write binary file type as text: ' ext]) '}'];
+    [j1, j2, ext] = fileparts(f); %#ok<ASGLU>
+    if any(strcmp(lower(ext), {'.mat', '.mdl', '.fig', '.slx', '.mexw', '.mex'}))
+        resp = resp_err(req.id, ['refusing to write binary file type as text: ' ext]);
         return;
     end
-    if isempty(pth), pth = pwd; end
-    full = fullfile(pth, [nm ext]);
-    enc = lower(req.enc);
-    if isempty(enc) || strcmp(enc, 'auto')
-        if strcmp(lowerext, '.m')
-            enc = 'gbk';
-        else
-            enc = 'utf8';
-        end
-    end
-    txt = req.content;
-    if strcmp(enc, 'gbk')
-        bytes = unicode2native(txt, 'GBK');
-    else
-        bytes = unicode2native(txt, 'UTF-8');
-    end
+    [full, enc, bytes] = enc_text_bytes(f, req.content, req.enc);
     fid = fopen(full, 'wb');
     if fid <= 0
-        resp = ['{"id":' num2str(req.id) ',"ok":false,"error":' jstr(['cannot open for write: ' full]) '}'];
+        resp = resp_err(req.id, ['cannot open for write: ' full]);
         return;
     end
     fwrite(fid, bytes, 'uint8');
     fclose(fid);
     rehash;
-    resp = ['{"id":' num2str(req.id) ',"ok":true,"stdout":' jstr(['written ' num2str(numel(bytes)) ' bytes (' enc ')']) '}'];
+    resp = resp_ok(req.id, ['written ' num2str(numel(bytes)) ' bytes (' enc ')']);
 catch
-    resp = ['{"id":' num2str(req.id) ',"ok":false,"error":' jstr(lasterr) '}'];
+    resp = resp_err(req.id, lasterr);
 end
 end
 
@@ -643,28 +629,28 @@ resp = '';
 try
     f = req.file;
     if isempty(f) || ~exist(f, 'file')
-        resp = ['{"id":' num2str(req.id) ',"ok":false,"error":' jstr(['file not found: ' f]) '}'];
+        resp = resp_err(req.id, ['file not found: ' f]);
         return;
     end
     d = dir(f);
     if d(1).bytes > 2097152
-        resp = ['{"id":' num2str(req.id) ',"ok":false,"error":"file too large (>2 MB) for text read"}'];
+        resp = resp_err(req.id, 'file too large (>2 MB) for text read');
         return;
     end
     if d(1).isdir
-        resp = ['{"id":' num2str(req.id) ',"ok":false,"error":"path is a directory"}'];
+        resp = resp_err(req.id, 'path is a directory');
         return;
     end
     fid = fopen(f, 'rb');
     if fid <= 0
-        resp = ['{"id":' num2str(req.id) ',"ok":false,"error":' jstr(['cannot open: ' f]) '}'];
+        resp = resp_err(req.id, ['cannot open: ' f]);
         return;
     end
     b = fread(fid, inf, 'uint8')';
     fclose(fid);
     enc = lower(req.enc);
     if isempty(enc) || strcmp(enc, 'auto')
-        [pth, nm, ext] = fileparts(f);
+        [j1, j2, ext] = fileparts(f); %#ok<ASGLU>
         if strcmpi(ext, '.m')
             enc = 'gbk';
         else
@@ -677,9 +663,9 @@ try
         txt = native2unicode(b, 'UTF-8');
     end
     txt = reshape(txt, 1, []);
-    resp = ['{"id":' num2str(req.id) ',"ok":true,"value":' jstr(txt) '}'];
+    resp = resp_val(req.id, jstr(txt));
 catch
-    resp = ['{"id":' num2str(req.id) ',"ok":false,"error":' jstr(lasterr) '}'];
+    resp = resp_err(req.id, lasterr);
 end
 end
 
@@ -893,6 +879,40 @@ L{k, 4} = detail;
 assignin('base', 'MCP_ASSERT_LOG', L);
 end
 
+% ------------------------------------------------------- response builders
+% v3.3.0: one helper per wire shape so the switch cases stop hand-building
+% the same brackets. All take the request id; text is jstr'd here, JSON
+% values arrive pre-serialized (mcp2json / hand-built).
+function s = resp_ok(id, stdout)
+% {"id":N,"ok":true[,  "stdout":"..."]}
+if nargin < 2 || isempty(stdout)
+    s = ['{"id":' num2str(id) ',"ok":true}'];
+else
+    s = ['{"id":' num2str(id) ',"ok":true,"stdout":' jstr(stdout) '}'];
+end
+end
+
+function s = resp_val(id, valueJson)
+% {"id":N,"ok":true,"value":<pre-serialized JSON>}
+s = ['{"id":' num2str(id) ',"ok":true,"value":' valueJson '}'];
+end
+
+function s = resp_err(id, msg)
+% {"id":N,"ok":false,"error":"..."}
+s = ['{"id":' num2str(id) ',"ok":false,"error":' jstr(msg) '}'];
+end
+
+function s = resp_out(id, good, txt)
+% stdout-only response whose ok mirrors the run result (eval / run_file).
+s = ['{"id":' num2str(id) ',"ok":' bool2str(good) ',"stdout":' jstr(txt) '}'];
+end
+
+function s = resp_err_out(id, stdout, msg)
+% Failure that still carries console output (eval with diary tail).
+s = ['{"id":' num2str(id) ',"ok":false,"stdout":' jstr(stdout) ...
+    ',"error":' jstr(msg) '}'];
+end
+
 function s = mpl_bool(v)
 if v, s = 'PASS'; else, s = 'FAIL'; end
 end
@@ -983,7 +1003,7 @@ try
         ',"numel":' num2str(n) ...
         ',"complete":' bool2str(complete) '}' stats '}'];
 catch
-    resp = ['{"id":' num2str(req.id) ',"ok":false,"error":' jstr(lasterr) '}'];
+    resp = resp_err(req.id, lasterr);
 end
 end
 
@@ -1034,37 +1054,43 @@ resp = '';
 try
     f = req.file;
     if isempty(f)
-        resp = ['{"id":' num2str(req.id) ',"ok":false,"error":"empty file path"}'];
+        resp = resp_err(req.id, 'empty file path');
         return;
     end
-    [pth, nm, ext] = fileparts(f);
-    lowerext = lower(ext);
-    if isempty(pth), pth = pwd; end
-    full = fullfile(pth, [nm ext]);
-    enc = lower(req.enc);
-    if isempty(enc) || strcmp(enc, 'auto')
-        if strcmp(lowerext, '.m')
-            enc = 'gbk';
-        else
-            enc = 'utf8';
-        end
-    end
-    txt = req.text;
-    if strcmp(enc, 'gbk')
-        bytes = unicode2native(txt, 'GBK');
-    else
-        bytes = unicode2native(txt, 'UTF-8');
-    end
+    [full, enc, bytes] = enc_text_bytes(f, req.text, req.enc);
     fid = fopen(full, 'ab');
     if fid <= 0
-        resp = ['{"id":' num2str(req.id) ',"ok":false,"error":' jstr(['cannot open for append: ' full]) '}'];
+        resp = resp_err(req.id, ['cannot open for append: ' full]);
         return;
     end
     fwrite(fid, bytes, 'uint8');
     fclose(fid);
-    resp = ['{"id":' num2str(req.id) ',"ok":true,"stdout":' jstr(['appended ' num2str(numel(bytes)) ' bytes (' enc ')']) '}'];
+    resp = resp_ok(req.id, ['appended ' num2str(numel(bytes)) ' bytes (' enc ')']);
 catch
-    resp = ['{"id":' num2str(req.id) ',"ok":false,"error":' jstr(lasterr) '}'];
+    resp = resp_err(req.id, lasterr);
+end
+end
+
+% ------------------------------------------------------------------
+function [full, enc, bytes] = enc_text_bytes(f, txt, enc)
+% Shared by write_file / append: resolve the absolute path (empty dir ->
+% cwd), resolve the encoding (auto: .m -> GBK else UTF-8) and encode txt to
+% a uint8 row vector.
+[pth, nm, ext] = fileparts(f);
+if isempty(pth), pth = pwd; end
+full = fullfile(pth, [nm ext]);
+enc = lower(enc);
+if isempty(enc) || strcmp(enc, 'auto')
+    if strcmp(lower(ext), '.m')
+        enc = 'gbk';
+    else
+        enc = 'utf8';
+    end
+end
+if strcmp(enc, 'gbk')
+    bytes = unicode2native(txt, 'GBK');
+else
+    bytes = unicode2native(txt, 'UTF-8');
 end
 end
 

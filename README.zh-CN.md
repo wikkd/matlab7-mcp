@@ -263,6 +263,31 @@ Sugiyama 式分层布局：① 从**目标侧**枚举边（分支边只有从 In
 
 ## 版本演进
 
+### v3.3.0 — 全量内部重构（审查驱动，协议零变更）
+
+对全部代码逐行审查后做结构性重构，全程由测试网把关（重构后 56 例回归 +
+17 查隔离驱动 + 专项重启验证，真 R14 上全绿）：
+
+- **server 拆模块**：1111 行单体拆成 lib/config.js（常量/env）、
+  lib/worker.js（生命周期 + 实例请求通道）、lib/tools.js（26 个 schema）、
+  lib/handlers.js（26 个实现）；mcp-server.js 只留 MCP stdio 管线。schema
+  与 v3.2.2 机器比对**逐字节一致**；文件协议不变。
+- **worker 去样板**：五个响应构造器（resp_ok / resp_val / resp_err /
+  resp_out / resp_err_out）替换约 20 处手拼括号串；eval 拆成 do_eval；
+  write_file/append 共享 enc_text_bytes（路径 + 编码 + 编码为字节）。
+- **三个审查修复**（契约对齐）：
+  - `matlab_restart` 现在**真的**杀进程重启——旧代码在 worker 活着时直接
+    早退，"重启"从不重载 worker 代码，而工具描述一直承诺 kill+restart
+    （探针实证：PID 换人、重启后 eval 正常）。
+  - 所有文本输出统一走 `MCP_MAX_CHARS` 截断（截断移进 textOut；此前只有
+    eval/run_file/read_file/last 截断——超大的 matlab_dir 清单或
+    matlab_sim_scan 输出是不设防的）。
+  - 超时请求不再泄漏 pendingCmd 条目；删除死代码（sleepSync——v3.0
+    Atomics 时代的阻塞遗留、figCounter）。
+- CI/静态检查跟随拆分：`node --check` 覆盖 lib/*.js，协议字段守卫与隐私
+  扫描读拼接后的模块源码。重启/boot 内的清扫改为先扫完再 spawn 新
+  worker（await，清扫不再可能与 boot 竞态）。
+
 ### v3.2.2 — 测试网补全（56 例 + 隔离/负路径驱动）
 
 v3.2/v3.2.1 的功能此前只临时验证过——重构把它们改坏时，旧套件照样全绿。

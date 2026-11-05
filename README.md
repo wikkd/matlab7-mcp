@@ -456,6 +456,37 @@ Real course models, sim outputs compared before/after:
 
 ## Changelog
 
+### v3.3.0 — full internal refactor (review-driven, zero wire changes)
+
+A line-by-line review of the whole codebase led to a structural rebuild,
+gated by the test net (56-case regress + 17-check isolation driver + a
+dedicated restart check, all green on real R14 after the refactor):
+
+- **Server split into modules**: the 1111-line monolith is now
+  `lib/config.js` (constants/env), `lib/worker.js` (lifecycle + per-instance
+  request channel), `lib/tools.js` (26 schemas) and `lib/handlers.js` (26
+  implementations); `mcp-server.js` keeps only the MCP stdio plumbing.
+  Tool schemas are machine-diffed **byte-identical** to v3.2.2; the file
+  protocol is unchanged.
+- **Worker de-duplicated**: five response builders (`resp_ok` / `resp_val` /
+  `resp_err` / `resp_out` / `resp_err_out`) replace ~20 hand-built bracket
+  chains; the eval case moved to `do_eval`; write_file/append share
+  `enc_text_bytes` (path + encoding + encode-to-bytes).
+- **Three review fixes** (contract alignments):
+  - `matlab_restart` really kills + re-boots the worker now — the old code
+    returned early on a live worker, so "restart" never reloaded worker
+    code, although its description always promised kill+restart
+    (probe-verified: PID changes, worker works after).
+  - every text output honors `MCP_MAX_CHARS` (truncation moved into
+    textOut; previously only eval/run_file/read_file/last truncated — a
+    huge `matlab_dir` listing or `matlab_sim_scan` output was unbounded).
+  - timed-out requests no longer leak a `pendingCmd` entry; dead code
+    removed (`sleepSync` — the v3.0 Atomics-era blocker, `figCounter`).
+- CI/static checks follow the split: `node --check` covers `lib/*.js`, and
+  the protocol-key guard + privacy scan read the concatenated module
+  sources. The sweep inside a restart/boot now completes before the new
+  worker spawns (awaited, so a sweep can no longer race a boot).
+
 ### v3.2.2 — test suite closes the coverage gap (56 cases + isolation/negative driver)
 
 The v3.2/v3.2.1 features had only been exercised ad hoc — a refactor could

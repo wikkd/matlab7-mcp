@@ -20,7 +20,7 @@ jobs:
 
       - name: Syntax-check all JS files
         run: |
-          for f in *.js; do node --check "$f"; done
+          for f in *.js lib/*.js; do node --check "$f"; done
 
       - name: Static consistency (ASCII .m / tool counts / README counts / privacy)
         run: node check_static.js

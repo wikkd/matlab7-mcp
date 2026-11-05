@@ -28,13 +28,17 @@ for (const f of fs.readdirSync(ROOT).filter((x) => x.endsWith('.m'))) {
 }
 
 // ---- 2. tool count in server ---------------------------------------------
-const server = fs.readFileSync(path.join(ROOT, 'mcp-server.js'), 'utf8');
+// v3.3: the server is split into lib/*.js modules — all checks that read the
+// server source must scan the entry PLUS every lib module.
+const jsFiles = fs.readdirSync(ROOT).filter((x) => x.endsWith('.js'))
+  .concat(fs.readdirSync(path.join(ROOT, 'lib')).filter((x) => x.endsWith('.js')).map((x) => 'lib/' + x));
+const server = jsFiles.map((f) => fs.readFileSync(path.join(ROOT, f), 'utf8')).join('\n');
 const toolDefs = [...server.matchAll(/^\s*name: '(matlab_[a-z_]+)',$/gm)].map((m) => m[1]);
 check('server:26-tools', toolDefs.length === 26, `${toolDefs.length} defs`);
 // Version and tool counts are derived, not hardcoded: read the version the
 // server actually advertises and require only its shape, so a future bump
 // doesn't need a test edit.
-const ver = (server.match(/version: '(\d+\.\d+\.\d+)'/) || [])[1];
+const ver = (server.match(/(?:version:|VERSION =) '(\d+\.\d+\.\d+)'/) || [])[1];
 check('server:version-shape', /^\d+\.\d+\.\d+$/.test(ver || ''), ver || 'not found');
 check('server:version-min', ver && ver >= '3.2.0' ? true : false, ver || '');
 check('server:dynamic-bootcount', server.includes('${TOOLS.length} tools'), '');
@@ -69,7 +73,9 @@ for (const readme of ['README.md', 'README.zh-CN.md']) {
 const os = require('os');
 const USERNAME = path.basename(os.homedir());
 const PRIV = [USERNAME, 'C:\\Users\\' + USERNAME];
-for (const f of fs.readdirSync(ROOT).filter((x) => /\.(js|m|md)$/.test(x) && x !== 'check_static.js')) {
+const scanFiles = fs.readdirSync(ROOT).filter((x) => /\.(js|m|md)$/.test(x) && x !== 'check_static.js')
+  .concat(fs.readdirSync(path.join(ROOT, 'lib')).filter((x) => x.endsWith('.js')).map((x) => 'lib/' + x));
+for (const f of scanFiles) {
   const txt = fs.readFileSync(path.join(ROOT, f), 'utf8');
   const hit = PRIV.find((p) => txt.includes(p));
   check(`privacy:${f}`, !hit, hit ? `contains "${hit}"` : '');
