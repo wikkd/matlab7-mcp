@@ -263,6 +263,16 @@ Sugiyama 式分层布局：① 从**目标侧**枚举边（分支边只有从 In
 
 ## 版本演进
 
+### v3.2.1 — 运行时卫生 + progress 路径加固
+
+连续一周课程项目实战（2026-10-31 → 11-05）踩出来的三个缺陷：
+
+| 症状 | 根因 | 修复 |
+|---|---|---|
+| `progress.json` 出现在**用户的项目目录**里，同时 `matlab_progress` 对一次 8 分钟多圈仿真全程报 "(no progress reported)" | worker boot 用 `evalin('base', …)` **在 try 块里**发布 `MCP_PROGRESS_FILE`——R14 这种方式建的 global 绑定跨请求不可靠（与 `matlab_assert` 改用 base 变量同一原因），`mcp_progress` 静默回退到 `pwd` | `mcp_progress` 回退改为 `which('mcp_progress')` 所在目录（即 server addpath 的工作目录），实在不行才用 `pwd`；worker 改为在自己函数帧直接赋值 global，并且**每个请求结束后重 assert**（用户代码 `clear all` 也能扛住） |
+| 14 个死 server 实例的 `res_history_i<pid>.jsonl` / `res_last_i<pid>.json` 在工作目录永久堆积 | boot 清扫只匹配通道文件，不匹配实例历史/末次文件 | boot 清扫（只在重启死 worker 时运行，活实例文件绝不触碰）扩展到 `res_history_i*.jsonl`、`res_last_i*.json` 与 legacy `res_history.jsonl` / `res_last.json` |
+| 默认名 `figure_<ts>.png` 截图无限堆积（实测 4 张） | 从来没人删 | 同一清扫顺带删 `figure_<13位时间戳>.png`；自定义 `file` 导出不受影响。`.gitignore` 顺手去重 |
+
 ### v3.2 — 对齐官方 MathWorks MCP 服务器
 
 | 官方能力 | v3.2 对应实现 |

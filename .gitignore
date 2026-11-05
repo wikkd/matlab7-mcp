@@ -1,12 +1,21 @@
 # MCP protocol files (runtime artifacts)
 req.json
+req_*.json
 res.json
 res.json.tmp
+res_boot.json
+res_last.json
+res_last_*.json
+res_history.jsonl
+res_history*.jsonl
 busy.json
 progress.json
+boot.lock
+shutdown.req
 worker.pid
 worker_boot.log
-shutdown.req
+worker_boot.log.1
+*.diary
 
 # test artifacts
 v3_log.md
@@ -22,19 +31,3 @@ package-lock.json
 # OS
 Thumbs.db
 .DS_Store
-worker_boot.log.1
-res_last.json
-res_history.jsonl
-res_last.json
-res.json
-req.json
-worker.pid
-busy.json
-progress.json
-*.diary
-worker_boot.log
-res_history*.jsonl
-res_last_*.json
-req_*.json
-res_boot.json
-boot.lock

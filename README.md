@@ -456,6 +456,17 @@ Real course models, sim outputs compared before/after:
 
 ## Changelog
 
+### v3.2.1 — runtime hygiene + progress-path hardening
+
+Three defects found by actually living on the bridge for a week of
+course-project sessions (2026-10-31 → 11-05):
+
+| Symptom | Root cause | Fix |
+|---|---|---|
+| `progress.json` appeared in the **user's project directory** while `matlab_progress` reported "(no progress reported)" for a whole 8-minute multi-cycle eval | worker boot published `MCP_PROGRESS_FILE` via `evalin('base', …)` **inside a try** — R14 global bindings created that way proved unreliable across calls (same reason `matlab_assert` logs to a base variable), so `mcp_progress` silently fell back to `pwd` | `mcp_progress` now falls back to the directory of `which('mcp_progress')` (the server-addpath'd work dir) before ever touching `pwd`; the worker sets the global directly in its own frame and re-asserts it after every request (survives user `clear all` too) |
+| 14 `res_history_i<pid>.jsonl` / `res_last_i<pid>.json` files from dead server instances piled up in the work dir forever | boot sweep only matched channel files, not per-instance history/last files | boot sweep (runs only when rebooting a dead worker, so live instances are never touched) now also removes `res_history_i*.jsonl`, `res_last_i*.json` and legacy `res_history.jsonl` / `res_last.json` |
+| stale default-named `figure_<ts>.png` exports accumulated (4 observed) | nothing ever deleted them | the same sweep removes `figure_<13-digit-ts>.png`; custom `file` exports are untouched. `.gitignore` deduplicated on the occasion |
+
 ### v3.2 — parity with the official MathWorks MCP server
 
 Compared against the official `matlab/matlab-mcp-server` + `simulink-agentic-toolkit`

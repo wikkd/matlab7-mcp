@@ -155,7 +155,7 @@ function handleMcpLine(line) {
     rpcResult(msg.id, {
       protocolVersion: msg.params?.protocolVersion || '2024-11-05',
       capabilities: { tools: {} },
-      serverInfo: { name: 'matlab7-mcp-server', version: '3.2.0' },
+      serverInfo: { name: 'matlab7-mcp-server', version: '3.2.1' },
     });
     return;
   }
@@ -228,9 +228,18 @@ async function killStaleWorker() {
     await sleep(500);
   }
   // clear protocol files from any previous session (all instances + legacy)
+  // v3.2.1: also sweep per-instance history/last files of dead instances and
+  // stale default-named figure PNGs - both accumulated forever in the work
+  // dir (14 res_history_i*/res_last_i* + 4 figure_<ts>.png observed
+  // 2026-11-05 after a week of sessions). Runs only when (re)booting a dead
+  // worker, so a live instance's files are never touched.
   try {
     for (const f of fs.readdirSync(WORK_DIR)) {
       if (/^(req_i\d+|res_i\d+|res_boot)\.json$/.test(f) ||
+          /^res_history_i\d+\.jsonl$/.test(f) ||
+          /^res_last_i\d+\.json$/.test(f) ||
+          f === 'res_history.jsonl' || f === 'res_last.json' ||
+          /^figure_\d{13}\.png$/.test(f) ||
           f === 'req.json' || f === 'res.json' || f === BUSY_FILE) {
         try { fs.unlinkSync(path.join(WORK_DIR, f)); } catch {}
       }

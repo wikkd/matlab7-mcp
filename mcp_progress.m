@@ -13,6 +13,19 @@ if nargin < 2, msg = ''; end
 global MCP_PROGRESS_FILE
 f = '';
 if ~isempty(MCP_PROGRESS_FILE), f = MCP_PROGRESS_FILE; end
+if isempty(f)
+    % v3.2.1: three-level fallback. R14 globals published from inside a try
+    % (worker boot does exactly that) proved unreliable across calls, and
+    % user code may run clear/clear all mid-eval which wipes globals too.
+    % The old pwd fallback then leaked progress.json into the user's project
+    % directory while matlab_progress kept reporting "(no progress
+    % reported)" for the whole run (observed 2026-11-04 on a multi-cycle
+    % RDR eval). Prefer the directory this file lives in: the server
+    % addpath'd it at boot and reads progress from its own work dir, which
+    % is the same folder in the standard single-directory layout.
+    p = which('mcp_progress');
+    if ~isempty(p), f = fullfile(fileparts(p), 'progress.json'); end
+end
 if isempty(f), f = fullfile(pwd, 'progress.json'); end
 
 p = 100 * min(max(pct, 0), 1);

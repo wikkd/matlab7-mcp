@@ -50,17 +50,18 @@ if exist(fullfile(pwd, 'worker_init.m'), 'file')
     end
 end
 
-% v3: publish progress.json path as a global so mcp_progress() calls inside
-% user eval code land in the worker's work dir regardless of cwd. The file
-% is cleared BEFORE each request and after a stop, so matlab_progress only
-% ever reports the last eval that actually wrote progress.
-try
-    evalin('base', ['global MCP_PROGRESS_FILE; MCP_PROGRESS_FILE = ''' ...
-        strrep(fullfile(pwd, 'progress.json'), '''', '''''') ''';']);
-    pf = fullfile(pwd, 'progress.json');
-    if exist(pf, 'file'), delete(pf); end
-catch
-end
+% v3.2.1: publish progress.json path as a global so mcp_progress() calls inside
+% user eval code land in the worker's work dir regardless of cwd. Set DIRECTLY
+% in this function frame - the previous evalin('base', ...) inside a try was
+% proven unreliable across calls on R14 (same reason mcp_assert logs to a base
+% variable instead), and the silently-lost global made mcp_progress fall back
+% to pwd, leaking progress.json into user project dirs. mcp_progress also has
+% a which()-based fallback for mid-eval clear/clear all. The file is cleared
+% BEFORE each request and after a stop, so matlab_progress only ever reports
+% the last eval that actually wrote progress.
+global MCP_PROGRESS_FILE
+MCP_PROGRESS_FILE = fullfile(reqdir, 'progress.json');
+if exist(MCP_PROGRESS_FILE, 'file'), delete(MCP_PROGRESS_FILE); end
 
 verstr = '';
 try
@@ -149,6 +150,10 @@ while true
     try
         if exist(busyfile, 'file'), delete(busyfile); end
     end
+    % v3.2.1: re-assert the progress path every request - user code may run
+    % clear/clear all, which wipes global bindings (and R14 globals set via
+    % evalin+try went missing even without an explicit clear).
+    MCP_PROGRESS_FILE = fullfile(reqdir, 'progress.json');
     if stopReq
         % Leaving? Also drop the progress file so a later worker does not
         % inherit this session's last progress numbers.
