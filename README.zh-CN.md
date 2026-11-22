@@ -2,7 +2,7 @@
 
 # matlab7-mcp
 
-**让 AI 助手操控 MATLAB 7.0 (R14, 2004) 的 MCP 服务器——26 个工具、零 npm 依赖、Simulink 正交自动布线与块自动重排**
+**让 AI 助手操控 MATLAB 7.0 (R14, 2004) 的 MCP 服务器——28 个工具、零 npm 依赖、Simulink 正交自动布线与块自动重排**
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
@@ -10,7 +10,7 @@
 ![Node](https://img.shields.io/badge/node-%E2%89%A516-green)
 ![MATLAB](https://img.shields.io/badge/MATLAB-7.0%20(R14)%20%7C%202004-lightgrey)
 ![License](https://img.shields.io/badge/license-MIT-yellow)
-![Tests](https://img.shields.io/badge/regression-59%2F59%20pass-brightgreen)
+![Tests](https://img.shields.io/badge/regression-76%2F76%20pass-brightgreen)
 
 </div>
 
@@ -54,7 +54,7 @@ MCP客户端 ──MCP stdio──> mcp-server.js (Node, 零依赖)
                        base workspace / figure / Simulink
 ```
 
-- `mcp-server.js` — MCP stdio 服务器：26 个工具定义、参数校验、请求文件、
+- `mcp-server.js` — MCP stdio 服务器：28 个工具定义、参数校验、请求文件、
   `fs.watch` 响应监视（100ms 兜底轮询）、`busy.json` 心跳。
 - `mcp_worker.m` — R14 内常驻 worker：轮询请求 → base workspace 求值 →
   diary 捕获输出 → 序列化写响应。**所有分支都有 catch，worker 必定回话。**
@@ -130,7 +130,7 @@ README，全部由你自己完成：
    ZCode：config.json 的 mcp.servers）。如果多个 MCP 客户端共用这个仓库
    目录，给每个客户端单独克隆一份——文件协议是单通道。
 4. 验证桥接：用 Node 运行仓库自带的回归测试（node v3_regress.js <仓库目录>），
-   预期 59/59 断言通过。如果截图相关断言失败，说明窗口抓取需要交互式桌面
+   预期 76/76 断言通过。如果截图相关断言失败，说明窗口抓取需要交互式桌面
    会话，报告其余哪些断言通过即可。
 5. 汇报：仓库路径、MATLAB 根目录、改了哪个配置文件、回归结果，以及还需要
    我手动做什么（重启客户端）。
@@ -141,7 +141,7 @@ README，全部由你自己完成：
 
 AI 部署完成后，重启 MCP 客户端，说一句"列出我的 MATLAB workspace"即可确认。
 
-## 工具清单（26 个）
+## 工具清单（28 个）
 
 **执行与诊断**
 
@@ -150,7 +150,8 @@ AI 部署完成后，重启 MCP 客户端，说一句"列出我的 MATLAB worksp
 | `matlab_eval` | base workspace 执行代码（含 `sim('model')`）；语法/运行时错误可靠上报；可选 `check_first` 先查后跑 |
 | `matlab_check` | 语法检查不运行：块关键字配平 + pcode 全量解析 |
 | `matlab_run_file` | 运行 `.m` 文件（自动 clear 该函数缓存、恢复工作目录） |
-| `matlab_status` / `matlab_restart` | worker 状态（含 busy 命令与已耗时）/ 重启 |
+| `matlab_status` / `matlab_restart` | worker 状态（含 busy 命令与已耗时）/ 重启（`keep_workspace:true` 先把 base 工作区快照到 .mat 再杀进程，新 worker 起来后自动回载） |
+| `matlab_abort` | 协作式中止（v3.4）：写旗标给 `mcp_abort_requested()` 轮询——检查旗标的长循环干净退出；从不轮询的代码仍需 `matlab_restart` 硬杀 |
 | `matlab_assert` / `matlab_assert_report` | 批量判分：把布尔表达式的 PASS/FAIL 记入 worker 持久日志（抛错=FAIL）/ 汇总并可清零 |
 | `matlab_last` | 最近一次已完成任务的输出——抢救被客户端超时切断的 eval 的控制台文本；`job_id` 从 20 条历史中取回更早任务，`list` 列出最近任务表 |
 | `matlab_progress` | 读回最近一次 eval 里 `mcp_progress(frac, msg)` 的打点（v3.1 起可边跑边轮询——server 不再阻塞） |
@@ -162,6 +163,7 @@ AI 部署完成后，重启 MCP 客户端，说一句"列出我的 MATLAB worksp
 | `matlab_get_var` / `matlab_set_var` | workspace 变量 JSON 读写 |
 | `matlab_summary` | 大数组带预算读取：meta + min/max/mean/std + 端点保留降采样 |
 | `matlab_workspace` | 列出 workspace 变量（名称/类型/尺寸） |
+| `matlab_snapshot` | base 工作区快照到 `.mat` / 回载（自动剔除 worker 内部协议变量）；`matlab_restart {keep_workspace:true}` 的底层能力 |
 | `matlab_write_file` / `matlab_append_file` | 写/追加文本（`.m` 自动转 GBK，其他 UTF-8；拒绝二进制类型） |
 | `matlab_read_file` | 读文本（`.m` 自动 GBK 解码，其他 UTF-8，≤2MB） |
 | `matlab_dir` | 列目录 |
@@ -212,6 +214,93 @@ Sugiyama 式分层布局：① 从**目标侧**枚举边（分支边只有从 In
 拖走的锚点）。它**绝不删线、绝不动块**；只报告 ghost 重复目标行数（红虚线
 渲染产物，不影响仿真）。
 
+v3 布线质量规则（2026-10-30，目标：不压文字、结点干净）：
+
+1. **名字标签=障碍。**每个可见块名标签都是布线矩形（宽 = Simulink 画布字体的
+   Java 字体度量，兜底 6 px/字符；R14 默认标签在块下方）。任何车道不得穿过
+   标签文字——旧的无标签布线器曾把长分支车道直接压过 "BPSK Modulator
+   Baseband"。
+2. **直行必须畅通。**同 y 直线只在源目标之间无遮挡时保留，否则绕行。
+3. **竖直段同样检查**（锚点车道与绕行策略验证两段竖直腿，不只查横段）。
+4. **绕行车道靠扫描**，不靠遮挡物极值外推——极值法在 x 跨度大时会绕到荒谬
+   深度，错过行间的干净走廊。
+5. **多目标端口给结点 stub。**主干折线缩成止于 J=`[port_x+12, port_y]` 的
+   短线；R14 把每条分支段的锚钉在主干末点，所有分支从一个干净的 T 分叉。
+   （v1 曾把主干布向最后一个目标，把结点拖到那家门上。）若某目标与端口同行
+   且后方有遮挡，J 落到源块自身标签下方——同行分支段永远做不了绕行
+   （见铁律 8）。
+6. **软兜底**：车道过不了标签+块体时，用仅块体重试——v3 永不劣于无标签的
+   v2。
+7. **尾段用规范化探针校准（v3.1）。**端口 stub 语义随块类型（铁律 4）：
+   `get_param Position` 可能是目标点、也可能已是 R14 的肘点（真目标 =
+   Position ± (10,0)）。布线器先写裸 `[P0;dp]`，读回 R14 追加的尾段，逐线
+   校准 ex/dx/dy；仍被剪（Sum 上/下进线看不到尾段）就从追加的点学出真
+   (dst, elbow) 换下一策略带校准重试。exp6 的确定性肘点剪断（Gain1/Gain_m/
+   Constant_Ff）正是这么消掉的。已知外观限制：上/下进线的 ~10px 进场 stub
+   会穿过该块自己的名字标签——不可修，R14 本来就画在那。
+8. **线-线避让（v4）**，对齐官方目标"避免与其他信号线重叠"：每条布好的线
+   记入 wire map 并打家族 id（主干+其分支段同族，合法 T 叠放豁免）。被别族
+   占用且跨度重叠的候选通道/车道**排最后试**（软避让）；残余的中段叠放走
+   nudge 一轮——把可动一侧重布并硬禁碰撞坐标（失败回滚旧几何）。与锚共线、
+   进场横段、规范肘点列属于 R14 强制段，永不当 nudge 目标——两强制段相叠是
+   官方认可的合并渲染。report.super_before/super_after/nudged 量化该轮。
+9. **进场车道去冲突（v4.1）**：R14 把每条存储尾段钉在规范肘点
+   `(dst_x-10, dst_y)`，所有进入同一块边列的线曾共用同一条竖直车道、叠成一
+   摞（EV_Energy_Range 光左列就有 13 处跨信号叠放）。`ex_pick` 优先规范列，
+   但被别族竖直占用（或目标行横段将重叠、或块/标签挡道）时按 10 px 左移。
+   探针实证形状：在 `X < dx-10` 垂降、沿目标行走横段、**显式存规范肘点**——
+   否则 R14 改写末点剪出斜线。裸探针发现无肘点的端口（`ex == dx`，竖直进线
+   的 Sum 输入）保持不移位。独立审计：跨族叠放 13 → **0**、斜线 3 → 0、
+   sim 锚点逐位一致。
+10. **A\* 中段搜索（v5）**——模式策略降级为已验证兜底，选路改为最优搜索。
+    每网络建 Hanan 式稀疏格（块/标签边缘 ±12、端口坐标、出口 stub、进场
+    车道），方向态 A\* 最小化 `长度 + 60·拐弯 + 20·跨线 + 8·拥塞`（跨线=
+    垂直穿过别族线段，拥塞=距别族 10 px 内）。硬障碍：膨胀矩形（块+标签）与
+    别族同向段。发射器逐字复用 v3/v4 序列化规则（探针学到的规范肘点尾、
+    stub、去重、读回）；任何失败（剪断/障碍/叠放/3 万弹出预算）回退模式
+    策略，且**每条失败路径都回滚尝试前几何**（修掉"原地未动却变异"的泄漏，
+    重布幂等——v4.1 会被自己的输出带漂，v5 逐位稳定）。同行受阻对与竖直
+    进线端口仍走模式逻辑。`opts.method='pattern'` 回到纯 v4.1；
+    `opts.bend/cross/congest` 调成本。独立评分器 `mcp_sim_metrics(model)`
+    （worker 侧，经 matlab_eval 调用）：斜线、越界、跨族叠放、跨线、压块/
+    压标签、总长/拐弯、最坏绕行——与布线器零共享状态。四模型 A/B
+    （v4.1 → v5，全部零缺陷保持）：Comm_Link 拐弯 21→**11**；EV_Drag_Power
+    长度 2439→**2127**、拐弯 24→**18**；Exp7 长度 9528→**9432**、拐弯
+    64→**56**；EV_Energy_Range 长度 10978→**10512**、拐弯 62→**56**、最坏
+    绕行 2.7→**1.3**、基线残留 4 处缺陷→0。单模型 ≤ 10 s；sim 锚点逐位
+    一致。
+11. **块自动排版（v6，`mcp_sim_arrange`）**——竖单列缺陷：回路成员过去被
+    压平到最浅前驱层，整条反馈链（EV_Energy_Range 的 SOC+里程双环 = 16 块）
+    堆进一列。v6 用 Kosaraju 找 SCC，每个 SCC 恰剪一条边——在全部剪边组合
+    里选总边跨度最小者（被剪的边仍是线，跨度参与计分）——然后普通 Kahn
+    最长路径分层；重心扫改为 down-down-up-down。回路链横向铺开，回绕线落点
+    与人工绘制一致（EV_Energy_Range 三列回绕）。随版修复的布线器漏洞：绕行
+    模式曾让竖直进线从错误一侧穿进目标块（两条这种线还互相锁死在对方的过期
+    段上——再跑一轮也救不回）；修法：末段垂降加 pullback-12px 块检查、目标
+    点限制在端口外侧、law-12 尾段在 A\* 发射前预置（根除竖直进线的"发射时
+    剪断"类——EV_Drag_Power 长度 2127→**2043**、Exp7 9432→**8858**）。
+    标签：竖直进线块的名字尽量预移到侧边（NameLocation 可用时），布线擦过
+    不可动名字由评分器报告（自身标签进场走廊 = R14 无解，豁免）；
+    EV_Energy_Range 按 xgap 110 / ygap 55 重排：**全部指标为零，sim 锚点
+    逐位一致**。
+12. **平行贴线控制（v6.1）**——异族线相距 2..10 px 平行超过 24 px 在屏上
+    读成一条合并线。四层控制：(a) 评分器统计此类对（阈值与修复器一致——
+    评分器数得到的必须修得掉）；(b) A\* 拥塞层改双环（10 px 内全费率、
+    10..22 px 半费率，`congest` 默认 8→12）让搜索散开车道；(c) 模式软避让
+    禁用别族同向段 12 px 内的通道；(d) `ex_pick` 把 12 px 内的平行垂降
+    （跨度重叠 > 24 px）视为已占用，首轮布线进场列就散开——单此一条即清掉
+    Exp7 左侧 6 线并行轨道（干净重排上长度 8858→7924）——幸存对再走
+    `wire_par_fixes` nudge 轮（整条拥挤带双坐标 ±8 px 禁用）。四模型从干净
+    副本重验：parallel 全零，其余指标保持零，sim 锚点逐位一致。
+
+**最小扰动模式（v6.2，`only_dirty`）**：给 `matlab_sim_route` 传
+`only_dirty: true`，存储形状已正交且无遮挡的线一律不动——对齐官方
+"知道什么时候别动信号"。它们的 wire map 条目照常参与避让；脏线走正常
+管线。障碍检查前先剪掉端口 stub（26 px，按设计就在 margin 区里）。report
+新增 `clean` = 跳过的干净线数。真实课程模型验证：
+`node v62_test_onlydirty.js <仓库> <模型.mdl> ...`（干净模型 → 0 重布/
+0 改动；剪断一条线 → 恰好重布该条；修复后再跑 → 严格空操作）。
+
 ### 实测结果
 
 真实课程模型，布线/重排前后仿真输出对比：
@@ -237,6 +326,30 @@ Sugiyama 式分层布局：① 从**目标侧**枚举边（分支边只有从 In
 6. **绝不要按"同目标端口多行=ghost"的规则脚本删线**——会误删合法分支行
    （我们删过 45 条然后靠公式逐条重建模型）。本布线器只报告；删除走
    `matlab_sim_info` 的显式修复选项。
+7. **分支段锚点 = 主干折线的末点**，不是内部顶点——重布主干时 R14 会把每条
+   同源分支段的 `Points(1,:)` 重新钉到那里。结点放置 = 选择主干折线的终点。
+8. **同行分支段（锚行 = 目标行）必剪成斜线**：R14 用规范尾段
+   `[...]→(dst,dy)→(dst+10,dy)` 替换任何绕行中间点，中间点列表全灭。这类
+   连接要从离开共享行的结点起布。
+9. **段中间点必须止于规范肘点 `(dst-10, dy)`**，且 SAFE-Z 的
+   `(c-8,sy)/(c,sy)` 成对技巧**不能用在段上**（成对会让 R14 丢掉通道）。
+   主干正相反：必须成对，任意尾段会被强制规范化。探针实证形状：
+   主干 `[P0;(c-8,sy);(c,sy);(c,dy);(dx-10,dy)]`，
+   段   `[P0;(c,sy);(c,dy);(dx-10,dy)]`。
+10. **块名标签不是暴露的几何。**封装块拒绝 `NameLocation`；文字宽度用
+    `java.awt.Toolkit.getDefaultToolkit.getFontMetrics(Font('Helvetica',0,10))`
+    度量（R14 拒绝链式静态调用——分两步写），位置按块下方放置。
+11. **R14 会把任何 set 形状的最后一个存储点改写到规范肘点
+    `(dst_x-10, dst_y)`**（不止裸主干——铁律 2 的推广）：垂降离开规范列的
+    形状也必须显式以 `...;(X,dy);(dx-10,dy)` 结尾，否则改写剪出斜线。肘点
+    由裸 `[P0;dp]` 探针发现；set 失败后学到的值已被污染（`Pr(end,1)` =
+    dst），要重新探针而非累积。
+12. **竖直进线尾段被改写为 `(dst_x, dst_y -/+ 5)`**——块边外侧靠近侧 5 px
+    带。更远的尾段（dy±10/20）会被拉进来；若倒数第二点是横段端点，5 px
+    平移剪出斜线（"sheared on emit"）。预置 `(dx, dy∓5)` 显式竖直尾可让
+    改写变空操作。另外：**Sum 与 Constant 块拒绝 `NameLocation`**（名字
+    位置不可动——R14 把它们印在下方的固定条带里，而下进线端口的进场走廊
+    恰是这条条带），布线器只对接受该参数的块移标签。
 
 ## 开发经验总结（两代版本实战战损，蒸馏成 8 条）
 
@@ -257,11 +370,88 @@ Sugiyama 式分层布局：① 从**目标侧**枚举边（分支边只有从 In
    数据；每次写后面跟一个读回断言。多个"改好了其实没改好"的 bug 都是这样抓出来的。
 7. **长任务要有进度通道**——并且当心用户代码里的裸 `clear`：它会同时清掉进度
    打点和循环变量，把失败伪装成成功（eval 工具现在会检测并警告）。
-8. **回归测试是每次重构的安全网。**59 组断言跑在真 stdio server + 真 MATLAB
+8. **回归测试是每次重构的安全网。**76 组断言跑在真 stdio server + 真 MATLAB
    上（GBK 往返、NaN 序列化、幽灵线审计、clear 警告与 progress 生命周期），
    让 v3 大修零伤亡落地。
 
 ## 版本演进
+
+### v3.4.0 — 协作式中止、工作区快照、最小扰动布线
+
+三个从课程项目实战模式（fire → poll → collect）长出来的长任务/生命周期
+功能，外加官方路由差距清单（`docs/routing-design-notes.md`）的最后一项：
+
+- **`matlab_abort` + `mcp_abort_requested()`** — R14 无法中断运行中的代码，
+  这是协作式中止通道。工具在 server 侧写旗标（瞬时，绝不排在忙 worker 的
+  请求队列后面）；轮询旗标的长循环干净退出、还能带回部分结果。旗标随请求
+  结束被消费、下一请求开始前被清掉，绝不泄漏到后续任务。从不轮询的代码仍需
+  `matlab_restart`（硬杀不变）。路径钉法照搬 `mcp_progress`（worker 帧全局
+  + 根 appdata，都能扛 `clear all`）。
+- **`matlab_snapshot`** — base 工作区存/取 `workspace_snap.mat`（保存侧自动
+  剔除 worker 内部 `MCP_*` 协议变量与 eval 标记，回载永不复活过期协议状态；
+  变量计数走 R14 稳妥的 struct 绕行——不信任 `whos('-file')`）。
+- **`matlab_restart {keep_workspace:true}`** — 快照 → 杀 → boot → 回载
+  一条龙。改 worker `.m` 不再赔上工作区（旧痛点：每次改 worker 代码 base
+  工作区全灭）。旧 worker 已死或忙时跳过并注明（忙 worker 收不了快照请求）。
+- **`mcp_sim_route` `only_dirty`** — 最小扰动预过滤，对齐官方"知道什么时候
+  别动信号"：存储形状已正交且无遮挡的线一律不动（wire map 照常记录，重布的
+  邻线仍会避让它）；脏线走正常 v6.1 管线。障碍检查前先剪掉端口 stub
+  （26 px）——它们按设计就在 margin 区里。真实课程模型验证见
+  `v62_test_onlydirty.js`（exp7：47 线/65 recs 双反馈环；Comm_Link）：
+  干净模型 → routed 0/changed 0；剪断一条线 → 恰好重布该条；修复后再跑
+  → 严格空操作。回归现为 71 例 / 76 断言 / 28 工具。
+
+### v6.1 — 平行贴线控制
+
+异族线以 2..10 px 间距并行 > 24 px 时，屏上读成一条合并线。四层控制：
+评分器按同一阈值统计（数得到的必须修得掉）→ A\* 拥塞层改双环费率（10 px 内
+全费、10..22 px 半费，`congest` 默认 8→12）→ 模式软避让禁用别族同向段
+12 px 内通道 → `ex_pick` 把 12 px 内平行垂降（跨度重叠 > 24 px）视为占用，
+首轮布线进场列即散开（Exp7 左侧 6 线并行轨道就此消失，干净重排上长度
+8858→7924）；幸存对再走 `wire_par_fixes` nudge 轮（整条拥挤带 ±8 px 禁用）。
+四模型从干净副本重验：parallel 全零、其余指标保持零、sim 锚点逐位一致。
+
+### v6 — SCC 排版：回路横向铺开
+
+旧 arrange 的回路兜底把回路成员压平到最浅前驱层——EV_Energy_Range 的
+SOC+里程双环（16 块）堆成一列。v6 用 Kosaraju 找 SCC、每个 SCC 恰剪一条边
+（全组合枚举取总跨度最小，被剪边仍按线计分），再普通 Kahn 分层；重心扫改
+down-down-up-down。随版修布线器三处：绕行模式可从错误一侧穿进竖直进线的
+目标块（两线互锁在对方过期段上，重跑不愈）——末段垂降加 pullback-12px 块
+检查、目标限制端口外侧、law-12 尾段在 A\* 发射前预置（EV_Drag_Power
+2127→2043、Exp7 9432→8858）；标签预处理 + 布线后标签修复轮（Sum/Constant
+拒绝 `NameLocation`）。EV_Energy_Range 按 xgap 110 / ygap 55 重排：全部
+指标零，sim 锚点逐位一致。
+
+### v5 — A\* 中段搜索：选路从枚举变最优
+
+模式策略降级为已验证兜底；每个 net 建 Hanan 式稀疏格（块/标签缘 ±12、端口、
+stub、进场车道），方向态 A\* 最小化 长度+60·拐弯+20·跨线+8·拥塞；发射器
+逐字复用 v3/v4 序列化规则；任何失败回退模式策略且回滚尝试前几何（重布幂等
+——v4.1 曾被自己的输出带漂）。`opts.method='pattern'` 回 v4.1；
+`opts.bend/cross/congest` 调成本。新增独立评分器 `mcp_sim_metrics`（与布线
+器零共享状态）。四模型 A/B：拐弯 Comm_Link 21→11、EV_Drag_Power 24→18、
+Exp7 64→56、EV_Energy_Range 62→56；长度 EV_Drag_Power 2439→2127、
+Exp7 9528→9432、EV_Energy_Range 10978→10512；最坏绕行 2.7→1.3、残留缺陷
+4→0。单模型 ≤10 s，sim 锚点逐位一致。
+
+### v4.1 — 进场车道去冲突
+
+R14 把存储尾段钉在规范肘点 `(dst_x-10, dst_y)`，所有进入同一块边列的线共用
+一条竖直车道叠成一摞——EV_Energy_Range 光左列 13 处跨信号叠放，且两侧都是
+R14 强制段、wire 计数看不见。`ex_pick` 被占时按 10 px 左移垂降列，存储尾段
+显式含规范肘点（否则 R14 改写末点剪斜线——首试剪断 53 条线，探针抓回）。
+独立审计：跨族叠放 13→0、斜线 3→0，sim 锚点逐位一致；Comm_Link / exp6 /
+exp7 回归全部 0 failed。
+
+### v4 — 线-线避让（对齐官方目标）
+
+官方目标"避免与其他信号线重叠"补齐：每条布好的线记入 wire map（主干+分支
+同族，合法 T 叠放豁免）；被别族占用且跨度重叠的候选通道/车道排最后试（软
+避让）；残余中段叠放走 nudge 轮，可动侧重布、碰撞坐标硬禁、失败回滚。锚共线
+段/进场横段/规范肘点列识别为 R14 强制段，永不当 nudge 目标。
+Comm_Link / EV_Drag_Power / Exp7 实证：super_before=super_after=0（软避让
+已够）、0 failed、0 非正交、sim 锚点一致。
 
 ### v3.3.0 — 全量内部重构（审查驱动，协议零变更）
 
@@ -445,9 +635,12 @@ MATLAB 通过 `-r` 以 GUI 进程启动。代码执行和仿真没问题，但�
 worker 空闲时可安全删除。
 
 **工具调用超时了——是死了吗？**
-先查 `matlab_status`：如果 worker 是 `busy`，说明还在跑——加大超时继续等，
-或 `matlab_restart` 中止。跑完（或重启）之后，`matlab_progress` 可以看到
-带 `mcp_progress` 打点的 eval 跑到了哪。只有 idle 且请求确认丢了才重试。
+先查 `matlab_status`：如果 worker 是 `busy`，说明还在跑——加大超时继续等。
+真要中止，先试 `matlab_abort`（v3.4 协作式：跑着的循环轮询
+`mcp_abort_requested()` 就会干净退出），不行再 `matlab_restart` 硬杀（base
+工作区丢——要留就用 `matlab_restart {keep_workspace:true}`）。跑完（或重启）
+之后，`matlab_progress` 可以看到带 `mcp_progress` 打点的 eval 跑到了哪。
+只有 idle 且请求确认丢了才重试。
 
 **两个 MCP 客户端能共用一个 server 目录吗？**
 不能——文件协议（req.json/res.json）是单通道。每个客户端实例用自己的克隆
@@ -474,11 +667,11 @@ worker 空闲时可安全删除。
 
 ```
 node check_static.js          # 无需 MATLAB：ASCII/工具数/README/隐私一致性
-node v3_regress.js <仓库目录>   # 全量回归：真 server + 真 R14 worker，59 组断言
+node v3_regress.js <仓库目录>   # 全量回归：真 server + 真 R14 worker，76 组断言
 node v32_test_isolation.js    # 隔离工作目录：boot 清扫、双实例共享、协议负路径
 ```
 
-回归测试起真 stdio server + 真 MATLAB worker，跑 59 组断言覆盖全部 26 个工具
+回归测试起真 stdio server + 真 MATLAB worker，跑 76 组断言覆盖全部 28 个工具
 （当前全过）。需要交互桌面会话（窗口截图）。`v3_smoke_window.js` 单测截图
 链路；`v3_smoke_arrange.js <模型路径>` 在任意 Simulink 模型上单测
 arrange+route 管线。隔离驱动在独立 `MCP_WORK_DIR` 里运行，额外验证 boot
@@ -489,8 +682,9 @@ MATLAB 层依赖真机 R14，留在本地跑。
 
 - MCP 客户端启动时加载 server（暂不启动 MATLAB）。
 - 首次工具调用启动 MATLAB worker（约 2 秒），之后常驻。
-- worker 崩溃时下一次调用自动检测并重启（base workspace 丢失；若存在
-  `worker_init.m` 会在启动时执行——适合做持久 addpath）。
+- worker 崩溃时下一次调用自动检测并重启（base workspace 丢失——计划内重启用
+  `matlab_restart {keep_workspace:true}` 快照并回载；若存在 `worker_init.m`
+  会在启动时执行——适合做持久 addpath）。
 - MCP 客户端退出时杀掉 worker（shutdown 信号处理）。
 
 ## 许可证

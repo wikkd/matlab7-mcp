@@ -110,9 +110,17 @@ connector-routing literature:
    but let a small A\* over an obstacle-corner grid choose the mid-section
    with cost = length + λ·bends. Replaces strategy enumeration with true
    optimality in dense diagrams.
-3. **Minimum-disturbance prefilter**: route only lines whose stored shape is
-   non-orthogonal or hits an obstacle (v3 already re-routes everything on
-   call; a flag could skip already-clean lines for interactive use).
+3. **Minimum-disturbance prefilter**:
+   **DONE (2026-11-22, mcp_sim_route v6.2, `opts.only_dirty`):** lines whose
+   stored shape is fully orthogonal and obstacle-free are left untouched
+   (wire map still records them, so re-routed neighbors avoid them); dirty
+   lines go through the normal v6.1 pipeline. Port stubs are trimmed (26 px)
+   before the obstacle check — they live inside the margin zone by design,
+   same exemption as the v5 emit audit. Validation driver
+   `v62_test_onlydirty.js` on real course models (Exp7 47 lines/65 recs,
+   Comm_Link 14/19): pristine -> routed 0 / geometry changed 0; a sheared
+   line -> exactly that line re-routed, model orthogonal again; post-fix ->
+   strict no-op. Report gained `clean` (skipped-clean count).
 4. **Shared-corridor bundling for >2 branches** (libavoid hyperedge nuance):
    currently all segments fork at one T; bundling would merge their exit runs
    until their lanes diverge.

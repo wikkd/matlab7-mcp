@@ -10,6 +10,8 @@ res_history.jsonl
 res_history*.jsonl
 busy.json
 progress.json
+abort.json
+workspace_snap.mat
 boot.lock
 shutdown.req
 worker.pid

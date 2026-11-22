@@ -3,7 +3,7 @@
 # matlab7-mcp
 
 **An MCP server that lets AI agents drive MATLAB 7.0 (R14, 2004) on Windows —
-26 tools, zero npm dependencies, Simulink orthogonal auto-routing & block auto-arrangement**
+28 tools, zero npm dependencies, Simulink orthogonal auto-routing & block auto-arrangement**
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
@@ -11,7 +11,7 @@
 ![Node](https://img.shields.io/badge/node-%E2%89%A516-green)
 ![MATLAB](https://img.shields.io/badge/MATLAB-7.0%20(R14)%20%7C%202004-lightgrey)
 ![License](https://img.shields.io/badge/license-MIT-yellow)
-![Tests](https://img.shields.io/badge/regression-59%2F59%20pass-brightgreen)
+![Tests](https://img.shields.io/badge/regression-76%2F76%20pass-brightgreen)
 
 </div>
 
@@ -142,7 +142,7 @@ https://github.com/wikkd/matlab7-mcp. Do all of this yourself:
    mcp.servers). If two MCP clients share this repo folder, give each its
    own clone — the file protocol is a single channel.
 4. Verify the bridge: run the repo's regression suite with Node
-   (node v3_regress.js <repo folder>) — expect 59/59 assertions passing.
+   (node v3_regress.js <repo folder>) — expect 76/76 assertions passing.
    If a capture-related assertion fails, note that window capture needs an
    interactive desktop session and report which assertions still pass.
 5. Report back: repo path, MATLAB root, config file edited, regression
@@ -156,7 +156,7 @@ ask me instead of guessing.
 After the agent finishes, restart your MCP client and try
 *"list my MATLAB workspace"* to confirm.
 
-## Tools (26)
+## Tools (28)
 
 **Execution & diagnostics**
 
@@ -165,7 +165,8 @@ After the agent finishes, restart your MCP client and try
 | `matlab_eval` | Run code in the base workspace (including `sim('model')`); reliable syntax & runtime error reporting; optional `check_first` |
 | `matlab_check` | Syntax-check without running: block-keyword balance + full pcode parse |
 | `matlab_run_file` | Run a `.m` file (auto-clears its function cache, restores cwd) |
-| `matlab_status` / `matlab_restart` | Worker status (incl. busy command + elapsed seconds) / restart |
+| `matlab_status` / `matlab_restart` | Worker status (incl. busy command + elapsed seconds) / restart (`keep_workspace:true` snapshots the base workspace before the kill and restores it after boot) |
+| `matlab_abort` | Cooperative abort (v3.4): writes the flag that `mcp_abort_requested()` polls — long loops that check it stop cleanly; code that never polls still needs `matlab_restart` |
 | `matlab_assert` / `matlab_assert_report` | Batch grading: record PASS/FAIL of a boolean expression into a persistent worker log (throwing = FAIL) / summarize and optionally clear it |
 | `matlab_last` | Output of the most recent completed job — rescues console text of evals whose tool call was cut by a client timeout; `job_id` fetches an older job from the 20-entry history, `list` shows the recent-job table |
 | `matlab_progress` | Read `mcp_progress(frac, msg)` markers from the last eval (v3.1: pollable WHILE the eval runs — the server no longer blocks) |
@@ -177,6 +178,7 @@ After the agent finishes, restart your MCP client and try
 | `matlab_get_var` / `matlab_set_var` | JSON read/write of workspace variables |
 | `matlab_summary` | Read large arrays with a row budget: meta + min/max/mean/std + endpoint-preserving downsample |
 | `matlab_workspace` | List workspace variables (name/class/size) |
+| `matlab_snapshot` | Save/restore the base workspace to a `.mat` snapshot (worker-internal protocol vars excluded automatically); feeds `matlab_restart {keep_workspace:true}` |
 | `matlab_write_file` / `matlab_append_file` | Write/append text (`.m` → GBK automatically, others UTF-8; binary types rejected) |
 | `matlab_read_file` | Read text (`.m` auto GBK-decode, others UTF-8, ≤ 2 MB) |
 | `matlab_dir` | List a directory |
@@ -356,6 +358,17 @@ junctions"):
     copies: parallel 0 everywhere, all other metrics still zero, sim
     anchors bit-identical.
 
+**Min-disturbance mode (v6.2, `only_dirty`)**: pass `only_dirty: true` to
+`matlab_sim_route` and lines whose stored shape is already orthogonal and
+obstacle-free are left untouched — the official "know when to leave a
+signal alone". Their wire-map entries still steer re-routed neighbors;
+dirty lines go through the normal pipeline. Port stubs are trimmed (26 px)
+before the obstacle check (they live inside the margin zone by design).
+The report gains `clean` = skipped-clean count. Validated on real course
+models by `node v62_test_onlydirty.js <repo> <model.mdl> ...` (pristine →
+0 routed / 0 changed; a sheared line → exactly that line re-routed;
+post-fix → strict no-op).
+
 ### Verified results
 
 Real course models, sim outputs compared before/after:
@@ -449,12 +462,121 @@ Real course models, sim outputs compared before/after:
 7. **Long tasks need a progress channel** — and beware user code that calls a
    bare `clear`, which wipes both the progress marker and your loop variables,
    disguising failures as successes (the eval tool now warns about it).
-8. **Regression tests are the safety net for every refactor.** 59 assertions
+8. **Regression tests are the safety net for every refactor.** 76 assertions
    over a real stdio server + real MATLAB (GBK round-trips, NaN serialization,
-   ghost audits, clear-warning and progress lifecycle) made the v3 overhaul of
-   26 tools land without casualties.
+   ghost audits, clear-warning and progress lifecycle) made the v3 overhaul
+   land without casualties.
 
 ## Changelog
+
+### v3.4.0 — cooperative abort, workspace snapshots, min-disturbance routing
+
+Three long-job / lifecycle features grown out of the course-project battle
+pattern (fire → poll → collect), plus the last item from the official-routing
+gap list in `docs/routing-design-notes.md`:
+
+- **`matlab_abort` + `mcp_abort_requested()`** — cooperative abort for R14,
+  which cannot interrupt running code. The tool writes an abort flag (server
+  side, instant, never queues behind the busy worker); long loops that poll
+  the flag stop cleanly and can still return partial results. The flag is
+  consumed with its request and cleared before the next one, so it never
+  leaks into a later job. Code that never polls still needs
+  `matlab_restart` (unchanged hard kill). Path pinning mirrors
+  `mcp_progress` (worker-frame global + root appdata, both survive
+  `clear all`).
+- **`matlab_snapshot`** — save/restore the base workspace to
+  `workspace_snap.mat` (worker-internal `MCP_*` protocol variables and the
+  eval marker are excluded on save, so a restore never resurrects stale
+  protocol state; variable counting uses an R14-safe struct detour because
+  `whos('-file')` is not trusted on R14).
+- **`matlab_restart {keep_workspace:true}`** — snapshot → kill → boot →
+  restore in one call. Editing worker `.m` files no longer costs the
+  workspace (the old pain: every worker-code change nuked the base
+  workspace). Skipped with a note when the old worker is dead or busy (a
+  busy worker cannot take the snapshot request).
+- **`mcp_sim_route` `only_dirty`** — min-disturbance prefilter matching the
+  official "know when to leave a signal alone": lines whose stored shape is
+  already orthogonal and obstacle-free are left untouched (their wire-map
+  entries still steer re-routed neighbors); dirty lines go through the
+  normal v6.1 pipeline. Port stubs are trimmed (26 px) before the obstacle
+  check — they live inside the margin zone by design. Validated on real
+  course models with `v62_test_onlydirty.js` (exp7: 47 lines/65 recs,
+  dual feedback loops; Comm_Link): pristine → routed 0/changed 0; sheared
+  line → exactly that line re-routed; post-fix → strict no-op. Regression
+  now 71 cases / 76 assertions over 28 tools.
+
+### v6.1 — parallel-crowding control
+
+Wires of different families running 2..10 px apart over > 24 px read as one
+merged line on screen. Four layers: the metrics grader counts such pairs with
+the fixer's exact thresholds (what the grader counts must be fixable) → the
+A\* congestion layer goes two-ring (full rate within 10 px, half rate
+10..22 px, `congest` default 8→12) → pattern soft-avoidance bans channels
+within 12 px of another family's same-direction segment → `ex_pick` treats a
+parallel descent within 12 px (span overlap > 24 px) as occupied, so entry
+columns spread already at first routing (this alone cleared Exp7's
+6-descent left rail, length 8858→7924 on a clean re-lay); surviving pairs
+get a `wire_par_fixes` nudge round (whole crowded band banned ±8 px on both
+coordinates). All four models re-verified from clean copies: parallel 0
+everywhere, all other metrics still zero, sim anchors bit-identical.
+
+### v6 — SCC-based block layout: loops spread horizontally
+
+The old arrange fallback flattened cycle members onto their shallowest
+feeder's layer — EV_Energy_Range's SOC + mileage loops (16 blocks) piled
+into ONE column. v6 finds SCCs (Kosaraju), cuts exactly ONE edge per SCC
+(picking the combination that minimizes total edge span; cut edges are
+still wires and scored as such), then runs plain Kahn layering; barycenter
+sweeps are down-down-up-down. Router fixes shipped alongside: the
+go-around pattern could pierce a vertical-entry dst block from the wrong
+side (two such wires dead-locked on each other's stale segments, a re-run
+did not heal them) — fixed with a pullback-12px block check on the final
+descent, goals restricted to the port's outer side, and the law-12 tail
+pre-applied in the A\* emit (EV_Drag_Power 2127→2043, Exp7 9432→8858);
+plus a label pre-pass and post-route label repair (Sum/Constant reject
+`NameLocation`). EV_Energy_Range re-laid at xgap 110 / ygap 55: all
+metrics zero, sim anchors bit-identical.
+
+### v5 — A\* mid-section search: path choosing turns optimal
+
+The pattern strategies are demoted to a verified fallback; per net, a
+Hanan-style sparse lattice (block/label edges ±12, ports, stubs, entry
+lanes) feeds a direction-state A\* minimizing length + 60·bends +
+20·crossings + 8·congestion; the emitter reuses the v3/v4 serialization
+rules verbatim; any failure falls back to patterns and RESTORES the
+pre-attempt geometry (re-routing idempotent — v4.1 drifted on its own
+output). `opts.method='pattern'` restores pure v4.1; `opts.bend/cross/congest`
+retune the cost. New independent grader `mcp_sim_metrics` (shares no state
+with the router). A/B on four models: bends Comm_Link 21→11, EV_Drag_Power
+24→18, Exp7 64→56, EV_Energy_Range 62→56; length EV_Drag_Power 2439→2127,
+Exp7 9528→9432, EV_Energy_Range 10978→10512; worst detour 2.7→1.3,
+residual defects 4→0. ≤ 10 s/model, sim anchors bit-identical.
+
+### v4.1 — entry-lane de-confliction
+
+R14 pins every stored tail to the canonical elbow `(dst_x-10, dst_y)`, so
+all lines entering one block-edge column shared the SAME vertical lane and
+stacked up — 13 cross-signal superpositions on EV_Energy_Range's left
+column alone, invisible to wire counting because both sides are
+R14-forced segments. `ex_pick` now steps the descent column left in 10 px
+while occupied, and the stored tail ends at the canonical elbow explicitly
+(otherwise R14 rewrites the last point and shears a diagonal — 53 lines
+sheared on the first attempt, probes caught it). Independent audit:
+cross-family overlaps 13→0, diagonals 3→0, sim anchors bit-identical;
+Comm_Link / exp6 / exp7 regressions all 0 failed.
+
+### v4 — line-line avoidance (matching the official objective)
+
+The official goal "avoid overlap with other signal lines" is closed: every
+routed line is tracked in a wire map with a family id (trunk + its
+branches share one, so legal tee overlaps are exempt); channels/lanes
+occupied by another family with overlapping span are tried LAST (soft);
+residual middle-segment superpositions get a nudge pass (re-route the
+movable side, hard-ban the colliding coordinate, restore on failure).
+Segments collinear with the anchor, the approach rung and the canonical
+elbow column are R14-forced and never nudge targets. Verified on
+Comm_Link / EV_Drag_Power / Exp7: super_before=super_after=0 (soft
+avoidance sufficed), 0 failed, 0 non-orthogonal, sim anchors identical.
 
 ### v3.3.0 — full internal refactor (review-driven, zero wire changes)
 
@@ -663,9 +785,13 @@ artifacts, gitignored, and safe to delete while the worker is idle.
 **Long-job pattern (v3.1)**: fire the eval/run_file call (the MCP client may cut
 it at ~30 s — the job keeps running), poll `matlab_status` (busy? elapsed?) and
 `matlab_progress` (scripted markers), then collect the console output with
-`matlab_last`. If the worker is `busy` and you truly want to abort, use
-`matlab_restart`. After the run finishes (or you restart), `matlab_progress` shows how far a `mcp_progress`-
-instrumented eval got. Retry only if the worker is idle and the request was lost.
+`matlab_last`. If the worker is `busy` and you truly want to abort, first try
+`matlab_abort` (v3.4: cooperative — works when the running loop polls
+`mcp_abort_requested()`), and fall back to `matlab_restart` (hard kill, base
+workspace lost — or keep it with `matlab_restart {keep_workspace:true}`). After
+the run finishes (or you restart), `matlab_progress` shows how far a
+`mcp_progress`-instrumented eval got. Retry only if the worker is idle and the
+request was lost.
 
 **Can two MCP clients share one server folder?**
 No — the file protocol (req.json/res.json) is a single channel. Give each
@@ -694,12 +820,12 @@ Two layers, both runnable from a fresh clone:
 
 ```
 node check_static.js          # no MATLAB needed: ASCII/tool-count/README/privacy consistency
-node v3_regress.js <repo>     # full regression: real server + real R14 worker, 59 assertions
+node v3_regress.js <repo>     # full regression: real server + real R14 worker, 76 assertions
 node v32_test_isolation.js    # isolated work dir: boot sweep, 2-instance sharing, protocol negatives
 ```
 
-The regression boots a real stdio server + real MATLAB worker and runs 59
-assertions across all 26 tools (currently all passing). Requires an
+The regression boots a real stdio server + real MATLAB worker and runs 76
+assertions across all 28 tools (currently all passing). Requires an
 interactive desktop session (window capture). `v3_smoke_window.js` tests the
 capture chain; `v3_smoke_arrange.js <model path>` tests the arrange+route
 pipeline on any Simulink model. The isolation driver runs in its own
@@ -712,7 +838,9 @@ every push; the MATLAB layer stays local because it needs a real R14 install.
 - The server loads at MCP-client startup (no MATLAB yet).
 - The first tool call boots the MATLAB worker (~2 s); it stays resident.
 - A crashed worker is auto-detected and restarted on the next call (base
-  workspace lost; `worker_init.m` runs at boot if present — handy for addpath).
+  workspace lost — `matlab_restart {keep_workspace:true}` snapshots and
+  restores it across a planned restart; `worker_init.m` runs at boot if
+  present — handy for addpath).
 - Worker is killed when the MCP client exits (shutdown signal handling).
 
 ## License

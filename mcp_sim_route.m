@@ -39,6 +39,11 @@ function report = mcp_sim_route(model, opts)
 %      diagonals in R14, so the junction drops below the source label when
 %      one dst sits on the port row behind blockers
 %
+% v6.2 min-disturbance prefilter (opts.only_dirty): lines whose stored shape
+% is already orthogonal and obstacle-free are left untouched -- the official
+% "know when to leave a signal alone". Wire map still records them, so
+% re-routed neighbors avoid them. report.clean counts the skipped lines.
+%
 % R14 line semantics (probe-verified, see README "line-semantics laws"):
 % trunk SAFE-Z needs the (c-8,c) pair vs collinear compression, segments
 % must not use it; every middle list must end at the calibrated elbow;
@@ -50,6 +55,8 @@ margin = 4;
 if nargin < 2, opts = struct(); end
 if isfield(opts, 'spacing'), spacing = opts.spacing; end
 if isfield(opts, 'margin'), margin = opts.margin; end
+only_dirty = false;
+if isfield(opts, 'only_dirty'), only_dirty = opts.only_dirty ~= 0; end
 
 % v5 A* options threaded to route_one -> route_astar
 aopts = struct('method', 'astar', 'bend', 60, 'cross', 20, ...
@@ -311,6 +318,7 @@ end
 % ---------------- route trunks first, then branches ----------------
 nrouted = 0;
 nkept = 0;
+nclean = 0;
 nfailed = 0;
 njunc = 0;
 juncSrc = [];
@@ -328,6 +336,14 @@ for k = 1:numel(uh)
     h = uh(k);
     dsts = udsts{k};
     if numel(dsts) == 1
+        % v6.2 min-disturbance: a clean line is left alone (also skipping the
+        % anchor re-pin below, which would disturb it), but still wire-mapped.
+        if only_dirty && line_is_clean(h, Rfull)
+            nclean = nclean + 1;
+            [wireA, wireFam, wireLine, wireOrd, wireLast] = wire_add(wireA, ...
+                wireFam, wireLine, wireOrd, wireLast, h);
+            continue;
+        end
         try
             spP = get_param(get_param(h, 'SrcPortHandle'), 'Position');
             spP = spP(1:2);
@@ -351,6 +367,14 @@ for k = 1:numel(uh)
         [wireA, wireFam, wireLine, wireOrd, wireLast] = wire_add(wireA, ...
             wireFam, wireLine, wireOrd, wireLast, h);
     else
+        % v6.2: a clean multi-dst trunk keeps its junction as-is (its branch
+        % segments are still checked individually in pass 2 below).
+        if only_dirty && line_is_clean(h, Rfull)
+            nclean = nclean + 1;
+            [wireA, wireFam, wireLine, wireOrd, wireLast] = wire_add(wireA, ...
+                wireFam, wireLine, wireOrd, wireLast, h);
+            continue;
+        end
         try
             spg = get_param(h, 'SrcPortHandle');
             spP = get_param(spg, 'Position');
@@ -400,6 +424,14 @@ end
 for r2 = 1:numel(recs)
     rec = recs{r2};
     if rec{3}, continue; end
+    % v6.2 min-disturbance: clean branch segments are left alone (skipping
+    % the tee re-pin below), but still wire-mapped.
+    if only_dirty && line_is_clean(rec{1}, Rfull)
+        nclean = nclean + 1;
+        [wireA, wireFam, wireLine, wireOrd, wireLast] = wire_add(wireA, ...
+            wireFam, wireLine, wireOrd, wireLast, rec{1});
+        continue;
+    end
     try
         spg2 = get_param(rec{1}, 'SrcPortHandle');
         if isempty(find(juncSrc == spg2, 1))
@@ -674,7 +706,7 @@ try
 end
 
 report = struct('model', model, 'routed', nrouted, 'kept', nkept, ...
-    'failed', nfailed, 'ghost_lines', ndedup, ...
+    'clean', nclean, 'failed', nfailed, 'ghost_lines', ndedup, ...
     'label_obstacles', size(labelR, 1), 'junctions', njunc, ...
     'super_before', nSuper0, 'super_after', nSuper1, 'nudged', nNudged, ...
     'label_fixes', nLabFix, 'details', {details});
@@ -1390,6 +1422,49 @@ for k = 2:size(P, 1)
         return;
     end
 end
+end
+
+% ------------------------------------------------------------------
+function tf = line_is_clean(lineH, R)
+% v6.2 min-disturbance prefilter: the stored shape is fully orthogonal AND
+% no segment crosses an obstacle rect (blocks + labels, inflated). The first
+% and last 26 px of the polyline are trimmed before checking -- the R14
+% port stubs live inside the margin zone BY DESIGN (same exemption as the
+% v5 emit audit), and a same-run shorter than the two stubs has nothing
+% left to check. Used only in opts.only_dirty mode; the wire map still
+% records clean lines so re-routed neighbors avoid them.
+tf = false;
+try
+    P = get_param(lineH, 'Points');
+catch
+    return;
+end
+n = size(P, 1);
+if n < 2, return; end
+if ~all_orthogonal(P), return; end
+STUB = 26;  % > longest port stub (~20 px) + margin (4 px)
+for j = 1:n-1
+    x1 = P(j, 1); y1 = P(j, 2);
+    x2 = P(j+1, 1); y2 = P(j+1, 2);
+    segLen = abs(x2 - x1) + abs(y2 - y1);
+    isH = abs(x2 - x1) >= abs(y2 - y1);
+    trimLo = 0; trimHi = 0;
+    if j == 1, trimLo = STUB; end
+    if j == n-1, trimHi = STUB; end
+    if segLen <= trimLo + trimHi, continue; end
+    if isH
+        d = sign(x2 - x1);
+        x1 = x1 + trimLo * d;
+        x2 = x2 - trimHi * d;
+        if seg_blocked_h(min(x1, x2), max(x1, x2), y1, R), return; end
+    else
+        d = sign(y2 - y1);
+        y1 = y1 + trimLo * d;
+        y2 = y2 - trimHi * d;
+        if seg_blocked_v(min(y1, y2), max(y1, y2), x1, R), return; end
+    end
+end
+tf = true;
 end
 
 % ------------------------------------------------------------------

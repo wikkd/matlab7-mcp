@@ -2,7 +2,7 @@
 // Static consistency checks that need NO MATLAB and NO worker:
 //   1. every .m helper file is pure ASCII (R14 reads .m as GBK; non-ASCII
 //      comments/strings mojibake at runtime - the em-dash bug)
-//   2. mcp-server.js TOOLS array has exactly 22 tools
+//   2. mcp-server.js TOOLS array has exactly 28 tools
 //   3. README badges/tables mention the same tool count as the code
 //   4. README regression count matches v3_regress.js T-assertions + subchecks
 //   5. no leftover username/private info in tracked bridge files
@@ -34,7 +34,7 @@ const jsFiles = fs.readdirSync(ROOT).filter((x) => x.endsWith('.js'))
   .concat(fs.readdirSync(path.join(ROOT, 'lib')).filter((x) => x.endsWith('.js')).map((x) => 'lib/' + x));
 const server = jsFiles.map((f) => fs.readFileSync(path.join(ROOT, f), 'utf8')).join('\n');
 const toolDefs = [...server.matchAll(/^\s*name: '(matlab_[a-z_]+)',$/gm)].map((m) => m[1]);
-check('server:26-tools', toolDefs.length === 26, `${toolDefs.length} defs`);
+check('server:28-tools', toolDefs.length === 28, `${toolDefs.length} defs`);
 // Version and tool counts are derived, not hardcoded: read the version the
 // server actually advertises and require only its shape, so a future bump
 // doesn't need a test edit.

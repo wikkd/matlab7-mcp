@@ -195,13 +195,25 @@ async function main() {
   await T('sim_arrange', true, () => tool('matlab_sim_arrange', { model: 'v3tst' }));
   const rr2 = await T('sim_route', true, () => tool('matlab_sim_route', { model: 'v3tst' }));
   if (rr2) {
-    const mj = rr2.text.match(/Routed (\d+) line\(s\), kept (\d+) as-is, failed (\d+)/);
+    const mj = rr2.text.match(/Routed (\d+) line\(s\), kept (\d+) as-is(?:, left (\d+) clean line\(s\) untouched)?, failed (\d+)/);
     if (!mj) { console.log('FAIL  sim_route-json', rr2.text); results.fail++; }
     else {
-      const routed = parseInt(mj[1], 10), failed = parseInt(mj[3], 10);
+      const routed = parseInt(mj[1], 10), failed = parseInt(mj[4], 10);
       if (routed < 1) { console.log('FAIL  sim_route-count', rr2.text); results.fail++; }
       else if (failed > 0) { console.log('FAIL  sim_route-failures', rr2.text); results.fail++; }
       else console.log(`PASS  sim_route-count (${routed} routed, ${failed} failed)`);
+    }
+  }
+  // v6.2 min-disturbance: a second pass on the freshly routed model must
+  // leave every clean line untouched (routed 0, clean >= 1)
+  const rr3 = await T('sim_route-only-dirty', true, () => tool('matlab_sim_route', { model: 'v3tst', only_dirty: true }));
+  if (rr3) {
+    const m3 = rr3.text.match(/Routed (\d+) line\(s\), kept (\d+) as-is(?:, left (\d+) clean line\(s\) untouched)?, failed (\d+)/);
+    if (!m3) { console.log('FAIL  sim_route-onlydirty-json', rr3.text); results.fail++; }
+    else {
+      const routed3 = parseInt(m3[1], 10), clean3 = parseInt(m3[3] || '0', 10);
+      if (routed3 > 0 || clean3 < 1) { console.log('FAIL  sim_route-onlydirty-count', rr3.text); results.fail++; }
+      else console.log(`PASS  sim_route-onlydirty-count (${clean3} clean, ${routed3} rerouted)`);
     }
   }
   const rck = await T('sim_route-connectivity', true, () => tool('matlab_eval', { code: [
@@ -263,6 +275,47 @@ async function main() {
   const rpc3 = await T('progress-survives-clear-all', true, () => tool('matlab_progress', {}));
   if (rpc3 && !rpc3.text.includes('42')) { console.log('FAIL  progress-lost-after-clear-all', rpc3.text); results.fail++; }
 
+  // ---- v3.4 cooperative abort (matlab_abort + mcp_abort_requested) ----
+  // idle worker: the tool must refuse to write a flag
+  await T('abort-idle', true, () => tool('matlab_abort', {}));
+  // no flag exists -> the poller returns false (0)
+  const raf = await T('abort-no-flag-eval', true, () => tool('matlab_eval', { code: 'rehash; disp(double(mcp_abort_requested()));' }));
+  if (raf && !raf.text.includes('0')) { console.log('FAIL  abort-flag-absent', raf.text); results.fail++; }
+  // real abort: the loop polls the flag; the test writes it mid-flight (the
+  // same file the matlab_abort tool writes) and the loop must bail out early
+  setTimeout(() => {
+    try { fs.writeFileSync(path.join(WORK, 'abort.json'), JSON.stringify({ req_id: 0, cmd: 'eval' }), 'utf8'); } catch {}
+  }, 2000);
+  const rab = await T('abort-coop-loop', true, () => tool('matlab_eval', { code: [
+    'n = 0;',
+    'for k = 1:300',
+    '  if mcp_abort_requested(), break; end',
+    '  n = k;',
+    '  pause(0.05);',
+    'end',
+    "fprintf('aborted_at=%d\\n', n);",
+  ].join('\n'), timeout_sec: 90 }));
+  if (rab) {
+    const m = rab.text.match(/aborted_at=(\d+)/);
+    if (!m || parseInt(m[1], 10) >= 300) { console.log('FAIL  abort-coop-loop-early', rab.text); results.fail++; }
+    else console.log(`PASS  abort-coop-loop-early (stopped at ${m[1]})`);
+  }
+  // the flag must be consumed by the finished request, not leak into this one
+  const rgo = await T('abort-flag-consumed', true, () => tool('matlab_eval', { code: 'disp(double(mcp_abort_requested()) + 100);' }));
+  if (rgo && !rgo.text.includes('100')) { console.log('FAIL  abort-flag-still-set', rgo.text); results.fail++; }
+
+  // ---- v3.4 workspace snapshot (save / status / restore round-trip) ----
+  await T('snapshot-seed', true, () => tool('matlab_eval', { code: "snap_x = 41; snap_s = 'hello'; disp('seeded');" }));
+  const rsn = await T('snapshot-save', true, () => tool('matlab_snapshot', { action: 'save' }));
+  if (rsn && !/snap_x/.test(rsn.text)) { console.log('FAIL  snapshot-save-vars', rsn.text); results.fail++; }
+  await T('snapshot-status', true, () => tool('matlab_snapshot', { action: 'status' }));
+  await T('snapshot-wipe', true, () => tool('matlab_eval', { code: "clear snap_x; clear snap_s; disp('wiped');" }));
+  await T('snapshot-missing-after-wipe', false, () => tool('matlab_get_var', { name: 'snap_x' }));
+  await T('snapshot-restore', true, () => tool('matlab_snapshot', { action: 'restore' }));
+  const rg2 = await T('snapshot-verify', true, () => tool('matlab_get_var', { name: 'snap_x' }));
+  if (rg2 && !rg2.text.includes('41')) { console.log('FAIL  snapshot-restore-value', rg2.text); results.fail++; }
+  else console.log('PASS  snapshot-restore-value (snap_x=41 back)');
+
   await T('status', true, () => tool('matlab_status', {}));
 
   // ---- v3.2 matlab_last history forms (list / job_id) ----
@@ -280,6 +333,14 @@ async function main() {
     // an id outside the ring buffer is an expected error
     await T('last-jobid-missing', false, () => tool('matlab_last', { job_id: 987654321 }));
   }
+
+  // ---- v3.4 restart with keep_workspace: snapshot -> kill -> boot -> restore ----
+  await T('keepws-seed', true, () => tool('matlab_eval', { code: "keepme = 1234; disp('seeded');" }));
+  const rkw = await T('restart-keep-workspace', true, () => tool('matlab_restart', { keep_workspace: true }));
+  if (rkw && !/restored \(\d+ vars?\)/.test(rkw.text)) { console.log('FAIL  restart-keepws-note', rkw.text.slice(0, 200)); results.fail++; }
+  const rkv = await T('restart-keepws-verify', true, () => tool('matlab_get_var', { name: 'keepme' }));
+  if (rkv && !rkv.text.includes('1234')) { console.log('FAIL  restart-keepws-value', rkv.text); results.fail++; }
+  else console.log('PASS  restart-keepws-value (keepme=1234 across restart)');
 
   console.log(`\n==== RESULT: ${results.pass} pass, ${results.fail} fail ====`);
   // teardown: drop artifacts this round wrote into the repo dir (the ascii

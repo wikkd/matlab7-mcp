@@ -16,8 +16,13 @@ function mcp_worker(reqfile, resfile, pidfile, busyfile)
 %             write_file read_file dir
 %             v3: check sim_info sim_clean summary closeall append
 %             v3.2: assert assert_report sim_scan sim_route sim_arrange
+%             v3.4: snapshot restore   (base-workspace .mat save/reload;
+%                   used by matlab_snapshot and matlab_restart keep_workspace;
+%                   cooperative abort needs no request - see
+%                   mcp_abort_requested.m + the matlab_abort tool)
 %   Requires mcp2json.m and json_decode.m on the path (same folder).
-%   Optional: mcp_progress.m (long-eval progress reporting).
+%   Optional: mcp_progress.m (long-eval progress reporting),
+%             mcp_abort_requested.m (cooperative abort polling).
 %
 %   v3.3.0 refactor: response building goes through the resp_ok / resp_val /
 %   resp_err / resp_out / resp_err_out helpers (wire format unchanged), the
@@ -73,6 +78,17 @@ if exist(MCP_PROGRESS_FILE, 'file'), delete(MCP_PROGRESS_FILE); end
 % survives clear/clear all (which wipe globals), probe-verified on R14.
 try
     setappdata(0, 'MCP_PROGRESS_FILE', MCP_PROGRESS_FILE);
+end
+
+% v3.4: cooperative abort - same pinning scheme as progress. mcp_abort_requested()
+% reads abort.json in the work dir; the server's matlab_abort tool writes it,
+% and it is cleared before/after every request so a flag never leaks into the
+% next job.
+global MCP_ABORT_FILE
+MCP_ABORT_FILE = fullfile(reqdir, 'abort.json');
+if exist(MCP_ABORT_FILE, 'file'), delete(MCP_ABORT_FILE); end
+try
+    setappdata(0, 'MCP_ABORT_FILE', MCP_ABORT_FILE);
 end
 
 verstr = '';
@@ -133,6 +149,12 @@ while true
         pf = fullfile(reqdir, 'progress.json');
         if exist(pf, 'file'), delete(pf); end
     end
+    % v3.4: a fresh request also drops any leftover abort flag - a flag
+    % written while the worker was idle must never abort the NEXT job.
+    try
+        af = fullfile(reqdir, 'abort.json');
+        if exist(af, 'file'), delete(af); end
+    end
 
     write_busy(busyfile, rid, raw);
     stopReq = false;
@@ -151,7 +173,7 @@ while true
                 replyfile = fullfile(rpdir, ['res_' req.reply '.json']);
             end
         end
-        [stopReq, resp] = handle_req(req, replyfile);
+        [stopReq, resp] = handle_req(req, replyfile, reqdir);
     catch
         msg = lasterr;
         resp = ['{"id":' num2str(rid) ',"ok":false,"error":' jstr(msg) '}'];
@@ -169,6 +191,15 @@ while true
     % v3.2.2: keep the appdata pin in sync (survives clear all).
     try
         setappdata(0, 'MCP_PROGRESS_FILE', MCP_PROGRESS_FILE);
+    end
+    % v3.4: same re-assert for the abort path + consume the flag (it belongs
+    % to the request that just finished).
+    MCP_ABORT_FILE = fullfile(reqdir, 'abort.json');
+    try
+        setappdata(0, 'MCP_ABORT_FILE', MCP_ABORT_FILE);
+    end
+    try
+        if exist(MCP_ABORT_FILE, 'file'), delete(MCP_ABORT_FILE); end
     end
     if stopReq
         % Leaving? Also drop the progress file so a later worker does not
@@ -238,10 +269,13 @@ end
 end
 
 % ------------------------------------------------------------------
-function [stopReq, resp] = handle_req(req, resfile)
+function [stopReq, resp] = handle_req(req, resfile, reqdir)
 % NOTE: never build strings containing user text via sprintf("%s") - R14's
 % sprintf mangles multi-byte chars to SUB (0x1A). Use [] concatenation with
 % num2str for numbers and jstr() for text.
+% reqdir = boot dir (pinned in the main frame); subfunction workspaces cannot
+% see the caller's variables, so it must be passed in (used by snapshot's
+% default path).
 stopReq = false;
 resp = '';
 cmd = lower(req.cmd);
@@ -455,6 +489,9 @@ switch cmd
             if isfield(req, 'margin') && ~isempty(req.margin) && req.margin >= 0
                 o.margin = req.margin;
             end
+            if isfield(req, 'only_dirty') && req.only_dirty ~= 0
+                o.only_dirty = true;
+            end
             rep = mcp_sim_route(req.model, o);
             resp = resp_val(req.id, mcp2json(rep));
         catch
@@ -488,6 +525,18 @@ switch cmd
     case 'append'
         % Append text to a file on disk (log building without fprintf %% pain).
         resp = do_append(req);
+
+    case 'snapshot'
+        % v3.4: save the base workspace (minus worker-internal MCP_* vars and
+        % the eval marker) to a .mat file. Feeds matlab_snapshot and the
+        % keep_workspace mode of matlab_restart.
+        resp = do_snapshot(req, reqdir);
+
+    case 'restore'
+        % v3.4: load a workspace snapshot back into base (same-named vars are
+        % overwritten). Never touches worker-internal names absent from the
+        % file because the save side already excluded them.
+        resp = do_restore(req, reqdir);
 
     otherwise
         resp = ['{"id":' num2str(req.id) ',"ok":false,"error":' jstr(['unknown cmd: ' cmd]) '}'];
@@ -833,7 +882,7 @@ req = struct('id', 0, 'cmd', 'ping', 'code', '', 'var', '', 'file', '', ...
     'fig', 0, 'dpi', 0, 'close', 0, 'enc', 'auto', 'content', '', 'value_json', '', ...
     'model', '', 'fix', 0, 'max_rows', 0, 'close_figs', 0, 'close_models', 0, ...
     'text', '', 'spacing', 0, 'margin', 0, 'sys', '', 'xgap', 0, 'ygap', 0, ...
-    'reply', '', 'group', '', 'pattern', '');
+    'reply', '', 'group', '', 'pattern', '', 'only_dirty', 0);
 p = json_decode(raw);
 if isfield(p, 'id'),          req.id = p.id;   end
 if isfield(p, 'cmd'),         req.cmd = p.cmd; end
@@ -860,6 +909,7 @@ if isfield(p, 'ygap'),        req.ygap = p.ygap; end
 if isfield(p, 'reply'),       req.reply = p.reply; end
 if isfield(p, 'group'),       req.group = p.group; end
 if isfield(p, 'pattern'),     req.pattern = p.pattern; end
+if isfield(p, 'only_dirty'),  req.only_dirty = p.only_dirty; end
 end
 
 function mcp_assert_log(grp, what, passed, detail)
@@ -1067,6 +1117,70 @@ try
     fclose(fid);
     resp = resp_ok(req.id, ['appended ' num2str(numel(bytes)) ' bytes (' enc ')']);
 catch
+    resp = resp_err(req.id, lasterr);
+end
+end
+
+% ------------------------------------------------------------------
+function resp = do_snapshot(req, reqdir)
+% v3.4: save the base workspace minus worker-internal variables to a .mat.
+% Worker-internal names (MCP_* log/marker vars, mcp_err_v2) are excluded so
+% a restore never resurrects stale protocol state.
+resp = '';
+try
+    f = req.file;
+    if isempty(f), f = fullfile(reqdir, 'workspace_snap.mat'); end
+    [pth, nm, ext] = fileparts(f); %#ok<ASGLU>
+    if isempty(ext), ext = '.mat'; end
+    if isempty(pth), pth = reqdir; end
+    f = fullfile(pth, [nm ext]);
+    names = evalin('base', 'who');
+    keep = names(~strncmp(names, 'MCP_', 4));
+    keep = keep(~strcmp(keep, 'mcp_err_v2'));
+    if isempty(keep)
+        if exist(f, 'file'), delete(f); end
+        resp = resp_val(req.id, ['{"saved":0,"bytes":0,"vars":[],"file":' jstr(f) '}']);
+        return;
+    end
+    q = cell(1, numel(keep));
+    for k = 1:numel(keep)
+        q{k} = ['''' strrep(keep{k}, '''', '''''') ''''];
+    end
+    cmdstr = ['save(''' strrep(f, '''', '''''') ''',' strjoin_r14(q, ',') ');'];
+    evalin('base', cmdstr);
+    d = dir(f);
+    resp = resp_val(req.id, ['{"saved":' num2str(numel(keep)) ...
+        ',"bytes":' num2str(d(1).bytes) ...
+        ',"vars":' mcp2json(keep) ',"file":' jstr(f) '}']);
+catch
+    resp = resp_err(req.id, lasterr);
+end
+end
+
+% ------------------------------------------------------------------
+function resp = do_restore(req, reqdir)
+% v3.4: load a snapshot .mat back into the base workspace. R14-safe variable
+% counting via a temporary struct (whos('-file') is not trusted on R14).
+resp = '';
+try
+    f = req.file;
+    if isempty(f), f = fullfile(reqdir, 'workspace_snap.mat'); end
+    if ~exist(f, 'file')
+        resp = resp_err(req.id, ['snapshot file not found: ' f]);
+        return;
+    end
+    evalin('base', ['mcp_snap_tmp = load(''' strrep(f, '''', '''''') ''');']);
+    fld = evalin('base', 'fieldnames(mcp_snap_tmp)');
+    for k = 1:numel(fld)
+        evalin('base', [fld{k} ' = mcp_snap_tmp.' fld{k} ';']);
+    end
+    evalin('base', 'clear mcp_snap_tmp;');
+    resp = resp_val(req.id, ['{"restored":' num2str(numel(fld)) ...
+        ',"vars":' mcp2json(fld) ',"file":' jstr(f) '}']);
+catch
+    try
+        evalin('base', 'clear mcp_snap_tmp;');
+    end
     resp = resp_err(req.id, lasterr);
 end
 end
